@@ -25,7 +25,9 @@ jobs:
       - name: Build, tag, and push Docker image
         run: |
           IMAGE_TAG=latest
-          ECR_URI=$(aws ecr describe-repositories --repository-names ${{ secrets.ECR_REPOSITORY }} --query "repositories[0].repositoryUri" --output text)
+          ECR_URI=$(aws ecr describe-repositories --repository-names "${{ secrets.ECR_REPOSITORY }}" --query 'repositories[0].repositoryUri' --output text)
+
+
 
           docker build -t $ECR_URI:$IMAGE_TAG .
           docker push $ECR_URI:$IMAGE_TAG
