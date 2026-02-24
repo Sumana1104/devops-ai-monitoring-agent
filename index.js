@@ -2,6 +2,11 @@ const express = require('express');
 require('dotenv').config();
 const app = express();
 
+app.get("/", (req, res) => {
+  res.status(200).send("OK");
+});
+
+
 const productRoutes = require('./routes/products');
 app.use('/products', productRoutes);
 
