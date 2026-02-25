@@ -8,9 +8,7 @@ app.use(express.json());
 
 // -------------------- HEALTH CHECK ROUTE --------------------
 // This is required for ALB health checks
-app.get("/", (req, res) => {
-  res.status(200).send("OK");
-});
+app.get("/", (req, res) => { res.send("OK"); });
 
 // -------------------- DATABASE CONNECTION --------------------
 const connectDB = require('./config/db');
@@ -57,6 +55,4 @@ app.use((err, req, res, next) => {
 // -------------------- SERVER --------------------
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, "0.0.0.0", () => { console.log(`Server running on port ${PORT}`); });
