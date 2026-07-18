@@ -144,6 +144,6 @@ Rollback:
 
 ## 👤 Author
 
-Suman — DevOps Engineer  
+Sumana — DevOps Engineer  
 Buford, GA  
 Building AI-powered monitoring systems and cloud-native microservices.
