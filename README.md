@@ -35,6 +35,44 @@ This project demonstrates real-world DevOps engineering skills including microse
 - CI/CD pipeline automates deployment
 
 ---
+                           ┌──────────────────────────┐
+                           │        Client / User     │
+                           └──────────────┬───────────┘
+                                          │  HTTP Requests
+                                          ▼
+                           ┌──────────────────────────┐
+                           │   FastAPI Monitoring App │
+                           │ (AI Agent + httpx calls) │
+                           └──────────────┬───────────┘
+                                          │  Generates metrics/traces/logs
+                                          ▼
+        ┌─────────────────────────┬─────────────────────────┬─────────────────────────┐
+        │                         │                         │                         │
+        ▼                         ▼                         ▼                         ▼
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────────┐
+│   Prometheus Exporter    │  │ OpenTelemetry Collector  │  │      CI/CD Pipeline      │
+│ (Scrapes /metrics)       │  │ (Traces + Logs pipeline) │  │ (GitHub → Build → Deploy)│
+└──────────────┬───────────┘  └──────────────┬───────────┘  └──────────────┬───────────┘
+               │ Metrics data                 │ Traces/Logs                  │ Build Artifact
+               ▼                               │                             ▼
+┌──────────────────────────┐                   │               ┌──────────────────────────┐
+│        Prometheus        │                   │               │     Docker Container      │
+│ (Stores metrics)         │                   │               │ (Image pushed to registry)│
+└──────────────┬───────────┘                   │               └──────────────┬───────────┘
+               │ Visualization queries         │                             │ Deployment
+               ▼                               ▼                             ▼
+┌──────────────────────────┐        ┌──────────────────────────┐   ┌──────────────────────────┐
+│         Grafana          │        │         Tempo (Traces)   │   │     Kubernetes Cluster   │
+│ (Dashboards & Alerts)    │        └──────────────────────────┘   │ (Deployment + Service +  │
+└──────────────┬───────────┘        ┌──────────────────────────┐   │  Probes + Autoscaling)   │
+               │ Alert triggers     │          Loki (Logs)     │   └──────────────────────────┘
+               ▼                    └──────────────────────────┘
+┌──────────────────────────┐
+│          Slack           │
+│ (Receives alert messages)│
+└──────────────────────────┘
+
+
 
 ## 📂 Project Structure
 
