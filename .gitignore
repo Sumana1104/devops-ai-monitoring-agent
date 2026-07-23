@@ -1,0 +1,22 @@
+# Python junk
+__pycache__/
+*.py[cod]
+*.log
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# Build / dist
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Big archives
+*.tar
+*.zip
+*.gz
+*.tgz
+*.7z
