@@ -1,28 +1,26 @@
 # ============================================================
-# Imports: FastAPI, Groq client, logging, time, OS
+# Imports
 # ============================================================
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 
-from groq import Groq
-import logging
-import time
 import os
 import json
-
+import time
+import logging
+import urllib.parse
 
 from dotenv import load_dotenv
 load_dotenv()
 
-# ============================================================
-# Slack Imports
-# ============================================================
+# Groq
+from groq import Groq
+
+# Slack
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 
-# ============================================================
-# OpenTelemetry Instrumentation
-# ============================================================
+# OpenTelemetry
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
 from opentelemetry.trace import get_current_span
@@ -32,16 +30,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
-# ============================================================
 # OTEL Metrics
-# ============================================================
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
-# ============================================================
-# Prometheus Metrics
-# ============================================================
+# Prometheus
 from prometheus_client import (
     Counter,
     Histogram,
@@ -52,7 +46,7 @@ from prometheus_client import (
 )
 
 # ============================================================
-# Logging Setup
+# Logging
 # ============================================================
 logging.basicConfig(
     level=logging.INFO,
@@ -61,7 +55,7 @@ logging.basicConfig(
 logger = logging.getLogger("ai-service")
 
 # ============================================================
-# FastAPI App Initialization
+# FastAPI App
 # ============================================================
 app = FastAPI()
 
@@ -69,22 +63,20 @@ app = FastAPI()
 def home():
     return {"status": "AI Monitoring Agent Running"}
 
-
 FastAPIInstrumentor().instrument_app(app)
 RequestsInstrumentor().instrument()
 
 # ============================================================
-# Groq Client Setup
+# Groq Client
 # ============================================================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
-    logger.error("GROQ_API_KEY is missing! App cannot start.")
-    raise RuntimeError("GROQ_API_KEY is missing")
+    raise RuntimeError("GROQ_API_KEY missing")
 
 client = Groq(api_key=GROQ_API_KEY)
 
 # ============================================================
-# Slack Client Setup
+# Slack Setup
 # ============================================================
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
@@ -98,14 +90,13 @@ signature_verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
 AI_REQUEST_COUNT = Counter("ai_requests_total", "Total number of AI requests")
 AI_LATENCY = Histogram("ai_request_latency_seconds", "Latency of AI processing")
 AI_ERRORS = Counter("ai_errors_total", "Total number of AI errors")
-AI_IN_PROGRESS = Gauge("ai_requests_in_progress", "Number of AI requests currently being processed")
+AI_IN_PROGRESS = Gauge("ai_requests_in_progress", "AI requests in progress")
 
-# Prevent double-start under uvicorn reload
 if __name__ == "__main__":
     start_http_server(9100)
 
 # ============================================================
-# OTEL Tracing Setup
+# OTEL Tracing
 # ============================================================
 resource = Resource(attributes={"service.name": "ai-service"})
 trace_provider = TracerProvider(resource=resource)
@@ -114,7 +105,7 @@ trace_exporter = OTLPSpanExporter(endpoint="http://otel-collector:4317", insecur
 trace_provider.add_span_processor(BatchSpanProcessor(trace_exporter))
 
 # ============================================================
-# OTEL Metrics Setup
+# OTEL Metrics
 # ============================================================
 metric_exporter = OTLPMetricExporter(endpoint="http://otel-collector:4317", insecure=True)
 metric_reader = PeriodicExportingMetricReader(metric_exporter)
@@ -124,33 +115,32 @@ meter = meter_provider.get_meter("ai-service")
 
 otel_ai_latency = meter.create_histogram(
     name="otel_ai_inference_latency_seconds",
-    description="AI inference latency via OTEL",
+    description="AI inference latency",
     unit="s"
 )
 
 # ============================================================
-# Prometheus Metrics Endpoint
+# Metrics Endpoint
 # ============================================================
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 # ============================================================
-# Health Check Endpoint
+# Health Check
 # ============================================================
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 # ============================================================
-# Main AI Inference Endpoint (/ask)
+# AI Inference Endpoint
 # ============================================================
 @app.post("/ask")
 def ask(payload: dict):
-
     prompt = payload.get("prompt")
     if not prompt:
-        raise HTTPException(status_code=400, detail="Missing 'prompt' field")
+        raise HTTPException(status_code=400, detail="Missing 'prompt'")
 
     AI_REQUEST_COUNT.inc()
     AI_IN_PROGRESS.inc()
@@ -163,7 +153,7 @@ def ask(payload: dict):
         trace_id = f"{ctx.trace_id:032x}"
         span_id = f"{ctx.span_id:016x}"
 
-        logger.info(f"AI received prompt trace_id={trace_id} span_id={span_id}")
+        logger.info(f"AI prompt trace_id={trace_id} span_id={span_id}")
 
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
@@ -187,27 +177,25 @@ def ask(payload: dict):
 # ============================================================
 # Slack Events Endpoint (FINAL WORKING VERSION)
 # ============================================================
-
-
-from fastapi import Form
-
 @app.post("/slack/events")
 async def slack_events(request: Request):
     raw_body = await request.body()
     body_str = raw_body.decode("utf-8")
 
+    # Decode URL-encoded payload
+    body_str = urllib.parse.unquote(body_str)
+
     # Slack sends: payload=<json>
     if body_str.startswith("payload="):
         body_str = body_str.replace("payload=", "")
 
-    # Now parse JSON
     data = json.loads(body_str)
 
-    # 1. Handle Slack challenge BEFORE signature verification
+    # 1. Slack challenge
     if data.get("type") == "url_verification":
-        return JSONResponse({"challenge": data["challenge"]})
+        return JSONResponse(content={"challenge": data["challenge"]})
 
-    # 2. Signature verification AFTER challenge
+    # 2. Signature verification
     if not signature_verifier.is_valid_request(raw_body, request.headers):
         raise HTTPException(status_code=400, detail="Invalid Slack signature")
 
