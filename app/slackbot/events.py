@@ -60,3 +60,14 @@ def handle_event(event: dict):
     agent = DevOpsAgent()
     answer = agent.ask(text)
     send_message(channel, answer)
+
+    # Slash command handler
+if "command" in data:
+    command = data["command"]
+    text = data.get("text", "")
+    channel = data.get("channel_id")
+
+    reply_text = f"Slash command {command} received: {text}"
+    slack_client.chat_postMessage(channel=channel, text=reply_text)
+
+    return Response("OK", media_type="text/plain")
