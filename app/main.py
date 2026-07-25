@@ -65,6 +65,11 @@ logger = logging.getLogger("ai-service")
 # ============================================================
 app = FastAPI()
 
+@app.get("/")
+def home():
+    return {"status": "AI Monitoring Agent Running"}
+
+
 FastAPIInstrumentor().instrument_app(app)
 RequestsInstrumentor().instrument()
 
