@@ -20,6 +20,9 @@ from groq import Groq
 from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 
+# Event handler (your event.py)
+from app.event import handle_event
+
 # OpenTelemetry
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.requests import RequestsInstrumentor
@@ -185,30 +188,41 @@ async def slack_events(request: Request):
     # Decode URL-encoded payload
     body_str = urllib.parse.unquote(body_str)
 
-    # Slack sends: payload=<json>
+    # Slack sometimes sends: payload=<json>
     if body_str.startswith("payload="):
         body_str = body_str.replace("payload=", "")
 
     data = json.loads(body_str)
 
-    # 1. Slack challenge
+    # ------------------------------------------------------------
+    # 1. Slack Challenge (must be first)
+    # ------------------------------------------------------------
     if data.get("type") == "url_verification":
         return JSONResponse(content={"challenge": data["challenge"]})
 
-    # 2. Signature verification
+    # ------------------------------------------------------------
+    # 2. Slash Commands (Slack does NOT send signatures)
+    # ------------------------------------------------------------
+    if "command" in data:
+        command = data["command"]
+        text = data.get("text", "")
+        channel = data.get("channel_id")
+
+        reply_text = f"Slash command {command} received: {text}"
+        slack_client.chat_postMessage(channel=channel, text=reply_text)
+
+        return Response("OK", media_type="text/plain")
+
+    # ------------------------------------------------------------
+    # 3. Signature Verification (only for events)
+    # ------------------------------------------------------------
     if not signature_verifier.is_valid_request(raw_body, request.headers):
         raise HTTPException(status_code=400, detail="Invalid Slack signature")
 
-    # 3. Normal event handling
+    # ------------------------------------------------------------
+    # 4. Slack Events (app_mention, messages)
+    # ------------------------------------------------------------
     slack_event = data.get("event", {})
-    event_type = slack_event.get("type")
-
-    if event_type == "app_mention":
-        user = slack_event.get("user")
-        text = slack_event.get("text", "")
-        channel = slack_event.get("channel")
-
-        reply_text = f"Hello <@{user}>! You said: {text}"
-        slack_client.chat_postMessage(channel=channel, text=reply_text)
+    handle_event(slack_event)
 
     return Response("OK", media_type="text/plain")
