@@ -194,6 +194,9 @@ async def slack_events(request: Request):
     if body_str.startswith("payload="):
         body_str = body_str.replace("payload=", "")
 
+    if body_str.startswith("command="):
+    data = dict(urllib.parse.parse_qsl(body_str))
+    else:
     data = json.loads(body_str)
 
     logger.info(f"Slack payload: {data}")
