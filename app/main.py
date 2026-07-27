@@ -182,9 +182,7 @@ def ask(payload: dict):
 # ============================================================
 @app.post("/slack/events")
 async def slack_events(request: Request):
-
-
-logger.info("===== SLACK REQUEST RECEIVED =====")
+    logger.info("===== SLACK REQUEST RECEIVED =====")
 
     raw_body = await request.body()
     body_str = raw_body.decode("utf-8")
@@ -197,7 +195,6 @@ logger.info("===== SLACK REQUEST RECEIVED =====")
         body_str = body_str.replace("payload=", "")
 
     data = json.loads(body_str)
-
 
     logger.info(f"Slack payload: {data}")
 
