@@ -21,7 +21,7 @@ from slack_sdk import WebClient
 from slack_sdk.signature import SignatureVerifier
 
 # Event handler (your event.py)
-from app.slackbot.event import handle_event
+from app.slackbot.events import handle_event
 
 # OpenTelemetry
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
