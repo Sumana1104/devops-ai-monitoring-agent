@@ -182,54 +182,64 @@ def ask(payload: dict):
 # ============================================================
 @app.post("/slack/events")
 async def slack_events(request: Request):
+
     logger.info("===== SLACK REQUEST RECEIVED =====")
 
     raw_body = await request.body()
     body_str = raw_body.decode("utf-8")
 
-    # Decode URL-encoded payload
-    body_str = urllib.parse.unquote(body_str)
+    logger.info(f"RAW BODY: {body_str}")
 
-    # Slack sometimes sends: payload=<json>
-    if body_str.startswith("payload="):
-        body_str = body_str.replace("payload=", "")
+    # Slash commands come as form data
+    if "command=" in body_str:
 
-    if body_str.startswith("command="):
-    data = dict(urllib.parse.parse_qsl(body_str))
-    else:
-    data = json.loads(body_str)
+        data = dict(urllib.parse.parse_qsl(body_str))
 
-    logger.info(f"Slack payload: {data}")
+        logger.info(f"SLASH COMMAND DATA: {data}")
 
-    # ------------------------------------------------------------
-    # 1. Slack Challenge (must be first)
-    # ------------------------------------------------------------
-    if data.get("type") == "url_verification":
-        return JSONResponse(content={"challenge": data["challenge"]})
-
-    # ------------------------------------------------------------
-    # 2. Slash Commands (Slack does NOT send signatures)
-    # ------------------------------------------------------------
-    if "command" in data:
-        command = data["command"]
-        text = data.get("text", "")
+        command = data.get("command")
+        text = data.get("text")
         channel = data.get("channel_id")
 
-        reply_text = f"Slash command {command} received: {text}"
-        slack_client.chat_postMessage(channel=channel, text=reply_text)
+        reply_text = (
+            f"🚀 Rocket AI Agent received:\n"
+            f"Command: {command}\n"
+            f"Message: {text}"
+        )
+
+        slack_client.chat_postMessage(
+            channel=channel,
+            text=reply_text
+        )
 
         return Response("OK", media_type="text/plain")
 
-    # ------------------------------------------------------------
-    # 3. Signature Verification (only for events)
-    # ------------------------------------------------------------
-    if not signature_verifier.is_valid_request(raw_body, request.headers):
-        raise HTTPException(status_code=400, detail="Invalid Slack signature")
 
-    # ------------------------------------------------------------
-    # 4. Slack Events (app_mention, messages)
-    # ------------------------------------------------------------
+    # Events API JSON
+    data = json.loads(body_str)
+
+    logger.info(f"EVENT DATA: {data}")
+
+
+    # Slack verification
+    if data.get("type") == "url_verification":
+        return JSONResponse(
+            content={"challenge": data["challenge"]}
+        )
+
+
+    if not signature_verifier.is_valid_request(
+        raw_body,
+        request.headers
+        ):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid signature"
+        )
+
+
     slack_event = data.get("event", {})
+
     handle_event(slack_event)
 
     return Response("OK", media_type="text/plain")
