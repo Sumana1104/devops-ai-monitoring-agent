@@ -44,17 +44,6 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 # ============================================================
-# Slack Security
-# ============================================================
-
-from slack_sdk.signature import SignatureVerifier
-from app.slackbot.events import handle_event
-
-SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET")
-signature_verifier = SignatureVerifier(SLACK_SIGNING_SECRET)
-
-
-# ============================================================
 # Logging
 # ============================================================
 
