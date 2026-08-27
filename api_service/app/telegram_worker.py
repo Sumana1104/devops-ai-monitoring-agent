@@ -15,7 +15,7 @@ async def handle_telegram_update(update: dict):
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{AI_SERVICE_URL}/ai",
-            json={"prompt": message},
+            json={"message": message},
             timeout=30,
         )
 
