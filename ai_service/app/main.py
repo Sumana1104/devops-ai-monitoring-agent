@@ -31,7 +31,7 @@ async def ai_endpoint(request: Request):
 
     try:
         response = groq_client.chat.completions.create(
-            model="mixtral-8x7b-32768",
+            model="groq/compound-mini",
             messages=[{"role": "user", "content": user_text}]
         )
         answer = response.choices[0].message.content
