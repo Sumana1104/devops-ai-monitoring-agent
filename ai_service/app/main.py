@@ -23,7 +23,7 @@ async def ai_endpoint(request: Request):
                 "Content-Type": "application/json"
             },
             json={
-                "model": "deepseek/deepseek-r1:free",
+                "model": "openai/gpt-4o-mini",
                 "messages": [
                     {"role": "user", "content": user_text}
                 ]
@@ -31,8 +31,13 @@ async def ai_endpoint(request: Request):
         )
 
         result = response.json()
-        reply = result["choices"][0]["message"]["content"]
-        return {"reply": reply}
+
+        # Safe extraction
+        if "choices" in result:
+            reply = result["choices"][0]["message"]["content"]
+            return {"reply": reply}
+        else:
+            return {"reply": f"AI Error: {result}"}
 
     except Exception as e:
         return {"reply": f"AI Error: {str(e)}"}
