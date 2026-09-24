@@ -1,27 +1,13 @@
 from fastapi import FastAPI, Request
+import requests
 import os
-import logging
-from dotenv import load_dotenv
-from groq import Groq
-
-load_dotenv()
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-if not GROQ_API_KEY:
-    raise Exception("Missing GROQ_API_KEY")
-
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
-)
-logger = logging.getLogger("ai-service")
 
 app = FastAPI()
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+
 @app.get("/")
-def home():
+def root():
     return {"status": "AI Monitoring Agent Running"}
 
 @app.post("/ai")
@@ -30,12 +16,23 @@ async def ai_endpoint(request: Request):
     user_text = data.get("message", "")
 
     try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": user_text}]
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek/deepseek-r1:free",
+                "messages": [
+                    {"role": "user", "content": user_text}
+                ]
+            }
         )
-        answer = response.choices[0].message.content
-    except Exception as e:
-        answer = f"AI Error: {e}"
 
-    return {"reply": answer}
+        result = response.json()
+        reply = result["choices"][0]["message"]["content"]
+        return {"reply": reply}
+
+    except Exception as e:
+        return {"reply": f"AI Error: {str(e)}"}
