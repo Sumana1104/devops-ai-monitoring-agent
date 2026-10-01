@@ -1,0 +1,35 @@
+name: "Build Authorization Gate"
+
+on:
+  workflow_run:
+    workflows: ["CodeQL Analysis", "Trivy Image Scan"]
+    types:
+      - completed
+
+jobs:
+  authorize:
+    name: "Authorize Build"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check CodeQL result
+        if: ${{ github.event.workflow_run.name == 'CodeQL Analysis' && github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "❌ CodeQL failed — build unauthorized"
+          exit 1
+
+      - name: Check Trivy result
+        if: ${{ github.event.workflow_run.name == 'Trivy Image Scan' && github.event.workflow_run.conclusion != 'success' }}
+        run: |
+          echo "❌ Trivy failed — build unauthorized"
+          exit 1
+
+      - name: Check commit signature
+        run: |
+          if ! git log -1 --pretty=%G? | grep -q "G"; then
+            echo "❌ Unsigned commit — build unauthorized"
+            exit 1
+          fi
+
+      - name: Build Authorized
+        run: echo "✅ Build authorized"
