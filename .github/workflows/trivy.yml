@@ -20,7 +20,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t devops-ai-monitoring-agent:latest .
+          docker build -t devops-ai-monitoring-agent:latest ./ai_service
 
       - name: Install Trivy
         run: |
