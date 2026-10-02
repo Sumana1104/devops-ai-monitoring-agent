@@ -5,7 +5,6 @@ WORKDIR /app
 COPY requirements.txt /tmp/requirements.txt
 
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
-RUN python -m pip install --no-cache-dir --upgrade "setuptools==82.0.0"
 
 COPY . .
 
