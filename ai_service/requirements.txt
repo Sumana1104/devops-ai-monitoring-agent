@@ -2,6 +2,7 @@ fastapi
 uvicorn
 gunicorn
 python-dotenv
+requests
 
 prometheus_client
 slack_sdk
