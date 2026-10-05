@@ -1,35 +1,87 @@
 name: "Build Authorization Gate"
 
 on:
-  workflow_run:
-    workflows: ["CodeQL Analysis", "Trivy Image Scan"]
-    types:
-      - completed
+  workflow_call:
+    inputs:
+      tests-result:
+        required: true
+        type: string
+      build-result:
+        required: true
+        type: string
+      trivy-result:
+        required: true
+        type: string
+      codeql-result:
+        required: true
+        type: string
+    outputs:
+      authorized:
+        description: Whether this commit passed every publication check.
+        value: ${{ jobs.authorize.outputs.authorized }}
+
+permissions:
+  contents: read
+  security-events: read
 
 jobs:
   authorize:
-    name: "Authorize Build"
+    name: "Authorize this commit"
     runs-on: ubuntu-latest
-
+    timeout-minutes: 5
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
     steps:
-      - name: Check CodeQL result
-        if: ${{ github.event.workflow_run.name == 'CodeQL Analysis' && github.event.workflow_run.conclusion != 'success' }}
-        run: |
-          echo "❌ CodeQL failed — build unauthorized"
-          exit 1
-
-      - name: Check Trivy result
-        if: ${{ github.event.workflow_run.name == 'Trivy Image Scan' && github.event.workflow_run.conclusion != 'success' }}
-        run: |
-          echo "❌ Trivy failed — build unauthorized"
-          exit 1
-
-      - name: Check commit signature
-        run: |
-          if ! git log -1 --pretty=%G? | grep -q "G"; then
-            echo "❌ Unsigned commit — build unauthorized"
-            exit 1
-          fi
-
-      - name: Build Authorized
-        run: echo "✅ Build authorized"
+      - name: Check results, signature, and CodeQL findings
+        id: check
+        uses: actions/github-script@v8
+        env:
+          TESTS_RESULT: ${{ inputs.tests-result }}
+          BUILD_RESULT: ${{ inputs.build-result }}
+          TRIVY_RESULT: ${{ inputs.trivy-result }}
+          CODEQL_RESULT: ${{ inputs.codeql-result }}
+        with:
+          script: |
+            core.setOutput('authorized', 'false');
+            const checks = {
+              'API tests': process.env.TESTS_RESULT,
+              'Docker build and startup': process.env.BUILD_RESULT,
+              'Trivy': process.env.TRIVY_RESULT,
+              'CodeQL': process.env.CODEQL_RESULT,
+            };
+            await core.summary.addHeading('Build authorization')
+              .addTable([
+                [{data: 'Check', header: true}, {data: 'Result', header: true}],
+                ...Object.entries(checks),
+              ]).write();
+            if (context.eventName !== 'push' || context.ref !== 'refs/heads/main') {
+              core.setFailed('Only a push to main can authorize publication.');
+              return;
+            }
+            const failed = Object.entries(checks).filter(([, result]) => result !== 'success');
+            if (failed.length) {
+              core.setFailed(`Publication blocked: ${failed.map(([name, result]) => `${name}=${result}`).join(', ')}`);
+              return;
+            }
+            const {owner, repo} = context.repo;
+            const branch = await github.rest.repos.getBranch({owner, repo, branch: 'main'});
+            if (branch.data.commit.sha !== context.sha) {
+              core.setFailed('A newer main commit exists; this image is no longer the release candidate.');
+              return;
+            }
+            const commit = await github.rest.repos.getCommit({owner, repo, ref: context.sha});
+            if (!commit.data.commit.verification?.verified) {
+              core.setFailed('The existing signed-commit policy requires a GitHub-verified signature.');
+              return;
+            }
+            const alerts = await github.paginate(github.rest.codeScanning.listAlertsForRepo, {
+              owner, repo, ref: 'refs/heads/main', tool_name: 'CodeQL', state: 'open', per_page: 100,
+            });
+            const blocking = alerts.filter(alert =>
+              ['high', 'critical'].includes(alert.rule.security_severity_level));
+            if (blocking.length) {
+              core.setFailed(`Publication blocked by ${blocking.length} open HIGH/CRITICAL CodeQL findings.`);
+              return;
+            }
+            core.setOutput('authorized', 'true');
+            await core.summary.addRaw(`Authorized commit: ${context.sha}`).write();

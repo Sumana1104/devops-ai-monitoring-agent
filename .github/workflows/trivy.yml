@@ -1,33 +1,59 @@
 name: "Trivy Image Scan"
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_call:
+    inputs:
+      image-ref:
+        required: true
+        type: string
+      image-artifact:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
 
 jobs:
   trivy-scan:
-    name: "Scan Docker Image with Trivy"
+    name: "Scan tested Docker image"
     runs-on: ubuntu-latest
-
+    timeout-minutes: 15
+    env:
+      IMAGE_REF: ${{ inputs.image-ref }}
     steps:
-      - name: Checkout repository
+      - name: Checkout repository for report locations
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build Docker image
-        run: |
-          docker build -t devops-ai-monitoring-agent:latest ./ai_service
-
-      - name: Install Trivy
+      - name: Download the image built by CI
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.image-artifact }}
+      - name: Load image without rebuilding it
+        run: docker load --input image.tar
+      - name: Install verified Trivy release
         run: |
           wget -O trivy.deb https://github.com/aquasecurity/trivy/releases/download/v0.75.0/trivy_0.75.0_Linux-64bit.deb
           echo "b6d7b944b6cbf4e7de5b4bc6c3635900c50fed53b64b77b99a5fbc3136cd1d5d  trivy.deb" | sha256sum --check
           sudo dpkg -i trivy.deb
-
-      - name: Run Trivy scan
-        run: |
-          trivy image --exit-code 1 --severity HIGH,CRITICAL devops-ai-monitoring-agent:latest
+      - name: Scan and save all vulnerability findings
+        run: trivy image --scanners vuln --exit-code 0 --format json --output trivy-results.json "$IMAGE_REF"
+      - name: Create the GitHub Security report
+        run: trivy convert --format sarif --output trivy-results.sarif trivy-results.json
+      - name: Enforce existing HIGH and CRITICAL policy
+        run: trivy convert --format table --severity HIGH,CRITICAL --exit-code 1 trivy-results.json
+      - name: Save complete scan reports even when the gate fails
+        if: ${{ always() && hashFiles('trivy-results.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports-${{ github.sha }}
+          overwrite: true
+          path: |
+            trivy-results.json
+            trivy-results.sarif
+      - name: Upload findings to GitHub Security
+        if: ${{ always() && hashFiles('trivy-results.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-container

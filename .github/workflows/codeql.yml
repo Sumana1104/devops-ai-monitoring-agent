@@ -1,10 +1,7 @@
 name: "CodeQL Analysis"
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
+  workflow_call:
   schedule:
     - cron: '0 3 * * 1'   # weekly scan every Monday 3 AM
 
@@ -12,6 +9,7 @@ jobs:
   analyze:
     name: "Run CodeQL"
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     permissions:
       actions: read

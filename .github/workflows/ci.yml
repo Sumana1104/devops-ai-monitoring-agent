@@ -1,0 +1,233 @@
+name: "CI Pipeline"
+
+on:
+  push:
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: "API tests (Python ${{ matrix.python-version }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    defaults:
+      run:
+        working-directory: ai_service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            ai_service/requirements.txt
+            ai_service/requirements-dev.txt
+      - name: Install application and test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check dependency compatibility
+        run: python -m pip check
+      - name: Test startup and AI request flow
+        run: python -m pytest tests -q --junitxml=test-results.xml
+      - name: Save test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-tests-python-${{ matrix.python-version }}
+          overwrite: true
+          path: ai_service/test-results.xml
+          if-no-files-found: warn
+
+  build:
+    name: "Build and smoke-test Docker image"
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      image-ref: ${{ steps.image.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set image name for this commit
+        id: image
+        shell: bash
+        run: |
+          echo "ref=ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+      - name: Build image once
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: docker build --pull --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t "$IMAGE_REF" ./ai_service
+      - name: Start the built container
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: docker run --detach --name opspilot-ci --publish 127.0.0.1:19000:9000 "$IMAGE_REF"
+      - name: Check container HTTP response
+        run: |
+          python3 - <<'PY'
+          import json
+          import time
+          import urllib.request
+          deadline = time.monotonic() + 60
+          while time.monotonic() < deadline:
+              try:
+                  with urllib.request.urlopen("http://127.0.0.1:19000/", timeout=2) as response:
+                      assert response.status == 200
+                      assert json.load(response)["status"] == "AI Monitoring Agent Running"
+                  print("Container startup and HTTP check passed")
+                  break
+              except OSError:
+                  time.sleep(1)
+          else:
+              raise SystemExit("Container did not become healthy within 60 seconds")
+          PY
+      - name: Show container logs on failure
+        if: failure()
+        run: docker logs opspilot-ci || true
+      - name: Stop test container
+        if: always()
+        run: docker rm --force opspilot-ci || true
+      - name: Save the tested image
+        env:
+          IMAGE_REF: ${{ steps.image.outputs.ref }}
+        run: docker save --output image.tar "$IMAGE_REF"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opspilot-image-${{ github.sha }}
+          path: image.tar
+          overwrite: true
+          compression-level: 0
+          retention-days: 3
+
+  trivy:
+    name: "Trivy"
+    needs: build
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/trivy.yml
+    with:
+      image-ref: ${{ needs.build.outputs.image-ref }}
+      image-artifact: opspilot-image-${{ github.sha }}
+
+  codeql:
+    name: "CodeQL"
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    uses: ./.github/workflows/codeql.yml
+
+  authorize:
+    name: "Build authorization"
+    needs: [tests, build, trivy, codeql]
+    if: ${{ always() && !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    permissions:
+      contents: read
+      security-events: read
+    uses: ./.github/workflows/gatekeeper.yml
+    with:
+      tests-result: ${{ needs.tests.result }}
+      build-result: ${{ needs.build.result }}
+      trivy-result: ${{ needs.trivy.result }}
+      codeql-result: ${{ needs.codeql.result }}
+
+  publish:
+    name: "Publish approved image to GHCR"
+    needs: [build, authorize]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.authorize.outputs.authorized == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image-digest: ${{ steps.publish.outputs.image-digest }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: opspilot-image-${{ github.sha }}
+      - name: Load the tested and scanned image
+        run: docker load --input image.tar
+      - name: Sign in to GitHub Container Registry
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Push image and record immutable reference
+        id: publish
+        env:
+          IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+        run: |
+          docker push "$IMAGE_REF"
+          PUBLISHED_IMAGE=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE_REF")
+          [[ "$PUBLISHED_IMAGE" == *@sha256:* ]]
+          echo "image-digest=$PUBLISHED_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Published image: \`$PUBLISHED_IMAGE\`" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-minikube:
+    name: "Deploy to local Kubernetes"
+    needs: [build, authorize, publish]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_TARGET == 'minikube' && needs.authorize.outputs.authorized == 'true' }}
+    runs-on: [self-hosted, linux, opspilot-minikube]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      IMAGE_REF: ${{ needs.build.outputs.image-ref }}
+      MINIKUBE_PROFILE: opspilot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: opspilot-image-${{ github.sha }}
+      - name: Confirm this commit is still the latest main commit
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {data} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            if (data.commit.sha !== context.sha) {
+              throw new Error('A newer main commit exists; deployment of this older image is blocked.');
+            }
+      - name: Check the local cluster and image reference
+        shell: bash
+        run: |
+          [[ "$IMAGE_REF" == "ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}" ]]
+          minikube status --profile "$MINIKUBE_PROFILE"
+          minikube update-context --profile "$MINIKUBE_PROFILE"
+      - name: Load the exact tested image into Minikube
+        run: minikube image load image.tar --profile "$MINIKUBE_PROFILE"
+      - name: Apply Kubernetes resources
+        id: apply
+        shell: bash
+        run: |
+          kubectl --context "$MINIKUBE_PROFILE" apply -f k8s/namespace.yaml
+          kubectl set image --local -f k8s/deployment.yaml opspilot="$IMAGE_REF" -o yaml | kubectl --context "$MINIKUBE_PROFILE" apply -f -
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+          kubectl --context "$MINIKUBE_PROFILE" apply -f k8s/service.yaml
+      - name: Wait for the rollout
+        run: kubectl --context "$MINIKUBE_PROFILE" -n opspilot rollout status deployment/opspilot --timeout=180s
+      - name: Verify HTTP through the Kubernetes Service
+        run: |
+          kubectl --context "$MINIKUBE_PROFILE" -n opspilot exec deployment/opspilot -- python -c 'import json,urllib.request; r=urllib.request.urlopen("http://opspilot.opspilot.svc.cluster.local:9000/", timeout=10); assert r.status == 200; assert json.load(r)["status"] == "AI Monitoring Agent Running"; print("Kubernetes Service HTTP check passed")'
+      - name: Show diagnostics on failure
+        if: failure()
+        run: |
+          kubectl --context "$MINIKUBE_PROFILE" -n opspilot get pods -o wide || true
+          kubectl --context "$MINIKUBE_PROFILE" -n opspilot describe deployment opspilot || true
+          kubectl --context "$MINIKUBE_PROFILE" -n opspilot logs deployment/opspilot --tail=100 || true
+      - name: Roll back a failed rollout when a previous revision exists
+        if: ${{ failure() && steps.apply.outputs.applied == 'true' }}
+        run: |
+          kubectl --context "$MINIKUBE_PROFILE" -n opspilot rollout undo deployment/opspilot || true
+          kubectl --context "$MINIKUBE_PROFILE" -n opspilot rollout status deployment/opspilot --timeout=120s || true

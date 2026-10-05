@@ -1,0 +1,23 @@
+.git
+.env
+.env.*
+!.env.example
+.venv
+venv
+**/__pycache__
+**/*.pyc
+**/*.log
+.pytest_cache
+tests
+requirements-dev.txt
+*.deb
+test-results.xml
+
+# Docker image archives
+*.tar
+*.tar.gz
+*.tgz
+
+*.tar
+*.tar.gz
+*.tgz
