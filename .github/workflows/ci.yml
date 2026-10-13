@@ -213,8 +213,9 @@ jobs:
         run: |
           kubectl --context "$MINIKUBE_PROFILE" apply -f k8s/namespace.yaml
           kubectl set image --local -f k8s/deployment.yaml opspilot="$IMAGE_REF" -o yaml | kubectl --context "$MINIKUBE_PROFILE" apply -f -
-          echo "applied=true" >> "$GITHUB_OUTPUT"
           kubectl --context "$MINIKUBE_PROFILE" apply -f k8s/service.yaml
+          kubectl --context "$MINIKUBE_PROFILE" apply -f k8s/hpa.yaml
+          echo "applied=true" >> "$GITHUB_OUTPUT"
       - name: Wait for the rollout
         run: kubectl --context "$MINIKUBE_PROFILE" -n opspilot rollout status deployment/opspilot --timeout=180s
       - name: Verify HTTP through the Kubernetes Service

@@ -1,33 +1,41 @@
 apiVersion: apps/v1
 kind: Deployment
+
 metadata:
   name: opspilot
   namespace: opspilot
+
 spec:
-  replicas: 1
   revisionHistoryLimit: 3
   progressDeadlineSeconds: 180
+
   strategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 0
       maxSurge: 1
+
   selector:
     matchLabels:
       app: opspilot
+
   template:
     metadata:
       labels:
         app: opspilot
+
     spec:
       containers:
         - name: opspilot
+
           # The deployment job substitutes the tested image before applying.
-          image: opspilot:bootstrap
+          image: opspilot:otel-logs-1
           imagePullPolicy: Never
+
           ports:
             - name: http
               containerPort: 9000
+
           env:
             - name: GROQ_API_KEY
               valueFrom:
@@ -35,6 +43,16 @@ spec:
                   name: opspilot-api
                   key: GROQ_API_KEY
                   optional: true
+
+            - name: OTEL_SERVICE_NAME
+              value: "opspilot"
+
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://host.minikube.internal:4318"
+
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http/protobuf"
+
           resources:
             requests:
               cpu: 100m
@@ -42,17 +60,20 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+
           startupProbe:
             httpGet:
               path: /
               port: http
             periodSeconds: 2
             failureThreshold: 30
+
           readinessProbe:
             httpGet:
               path: /
               port: http
             periodSeconds: 5
+
           livenessProbe:
             httpGet:
               path: /
