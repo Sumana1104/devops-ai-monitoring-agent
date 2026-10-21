@@ -21,3 +21,25 @@ build/
 *.gz
 *.tgz
 *.7z
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+data/chroma/
+chroma/
+
+# Local backups
+*.bak

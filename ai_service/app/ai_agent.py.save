@@ -1,0 +1,80 @@
+from langgraph.graph import StateGraph, START, END
+from typing import TypedDict
+
+class AgentState(TypedDict):
+    incident: str
+    analysis: str
+
+from groq import Groq
+from ai_service.app.k8s_tools import k_get_pods, k_describe_pod
+import os
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "k_get_pods",
+            "description": "List Kubernetes pods and their status across namespaces.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "k_describe_pod",
+            "description": "Read Kubernetes pod details and events.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pod_name": {"type": "string"}
+                },
+                "required": ["pod_name"]
+            }
+        }
+    }
+]
+
+def execute_tool(name, arguments):
+    if name == "k_get_pods":
+        return k_get_pods()
+
+    if name == "k_describe_pod":
+        return k_describe_pod(arguments["pod_name"])
+
+    return "Unknown tool requested"
+
+def investigate(state: AgentState):
+    client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+    pods = k_get_pods()
+    incident_details = f"{state['incident']}\n\nActual Kubernetes pods:\n{pods}"
+
+    response = client.chat.completions.create(
+        model="openai/gpt-oss-20b",
+                tools=tools,
+        tool_choice="auto",
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an AI SRE engineer. Analyze incidents carefully. Never invent evidence."
+            },
+            {
+                "role": "user",
+                "content": incident_details
+            }
+        ]
+    )
+
+    return {"analysis": response.choices[0].message.content}
+workflow = StateGraph(AgentState)
+
+workflow.add_node("investigate", investigate)
+
+workflow.add_edge(START, "investigate")
+workflow.add_edge("investigate", END)
+
+agent = workflow.compile()

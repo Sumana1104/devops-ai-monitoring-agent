@@ -17,3 +17,7 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation
 opentelemetry-instrumentation-fastapi
 opentelemetry-instrumentation-requests
+chromadb
+sentence-transformers
+langgraph
+pydantic
