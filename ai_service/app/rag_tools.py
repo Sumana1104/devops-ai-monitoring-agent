@@ -88,7 +88,11 @@ def retrieve_similar_incidents(query, top_k=3):
         query_embeddings=[embedding],
         n_results=min(top_k, collection.count()),
         include=["documents", "metadatas", "distances"],
-        where={"type": "verified_incident"},
+        where={
+    "type": {
+        "$in": ["verified_incident", "reviewed_runbook"]
+    }
+},
     )
 
     matches = []
