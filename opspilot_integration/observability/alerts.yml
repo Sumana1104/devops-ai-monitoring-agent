@@ -1,0 +1,39 @@
+groups:
+  - name: opspilot-demo
+    rules:
+      - alert: OpsPilotHighErrorRate
+        expr: |
+          (
+            sum(rate(opspilot_http_requests_total{status=~"5.."}[1m]))
+            /
+            clamp_min(sum(rate(opspilot_http_requests_total[1m])), 0.001)
+          ) > 0.08
+          and sum(rate(opspilot_http_requests_total[1m])) > 0.1
+        for: 20s
+        labels:
+          severity: high
+          service: opspilot-demo
+        annotations:
+          summary: "OpsPilot demo HTTP 5xx error-rate spike"
+          description: "The demo app generated more than 8% HTTP 5xx over a minute"
+      - alert: OpsPilotHighLatency
+        expr: |
+          histogram_quantile(0.95, sum by (le) (
+            rate(opspilot_http_request_duration_seconds_bucket[1m])
+          )) > 0.4
+        for: 20s
+        labels:
+          severity: medium
+          service: opspilot-demo
+        annotations:
+          summary: "OpsPilot demo HTTP p95 latency spike"
+          description: "The observed HTTP p95 duration exceeded 400ms"
+      - alert: OpsPilotDemoMetricsDown
+        expr: up{job="opspilot-demo"} == 0
+        for: 30s
+        labels:
+          severity: high
+          service: opspilot-demo
+        annotations:
+          summary: "OpsPilot demo metric target unreachable"
+          description: "Prometheus cannot scrape the demo app; investigate networking/pod health"

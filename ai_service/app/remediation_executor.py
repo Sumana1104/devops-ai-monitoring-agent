@@ -1,3 +1,4 @@
+import os
 
 import json
 import subprocess
@@ -7,8 +8,8 @@ from api_service.app.approval_store import get_approval
 
 
 NAMESPACE = "opspilot"
-DEPLOYMENT = "opspilot"
-APP_LABEL = "app=opspilot"
+DEPLOYMENT = "opspilot-demo"
+APP_LABEL = "app=opspilot-demo"
 
 
 def get_live_restart_evidence():
@@ -19,7 +20,7 @@ def get_live_restart_evidence():
     try:
         result = subprocess.run(
             [
-                "kubectl", "get", "pods",
+                "kubectl", "--context", "opspilot", "get", "pods",
                 "-n", NAMESPACE,
                 "-l", APP_LABEL,
                 "-o", "json",
@@ -72,6 +73,7 @@ def get_live_restart_evidence():
         return {
             "confirmed": confirmed,
             "pod": pod["metadata"]["name"],
+            "pod_uid": pod["metadata"]["uid"],
             "waiting_reason": waiting_reason,
             "termination_reason": termination_reason,
             "exit_code": exit_code,
@@ -200,7 +202,7 @@ def verify_recovery(timeout_seconds=120):
     try:
         rollout = subprocess.run(
             [
-                "kubectl", "rollout", "status",
+                "kubectl", "--context", "opspilot", "rollout", "status",
                 f"deployment/{DEPLOYMENT}",
                 "-n", NAMESPACE,
                 f"--timeout={timeout_seconds}s",
@@ -213,7 +215,7 @@ def verify_recovery(timeout_seconds=120):
 
         result = subprocess.run(
             [
-                "kubectl", "get", "deployment",
+                "kubectl", "--context", "opspilot", "get", "deployment",
                 DEPLOYMENT,
                 "-n", NAMESPACE,
                 "-o", "json",
@@ -263,3 +265,134 @@ def verify_recovery(timeout_seconds=120):
                 f"{type(error).__name__}"
             ),
         }
+
+def execute_approved_remediation(incident_id, execute=False):
+    """
+    One-time, human-approved demo remediation.
+
+    Dry-run never changes Kubernetes or consumes approval.
+    Live execution requires an explicit feature gate.
+    Only deployment/opspilot-demo is allowed.
+    """
+    from api_service.app.approval_store import (
+        claim_approved_action,
+    )
+
+    eligibility = check_remediation_eligibility(incident_id)
+
+    if not eligibility["eligible"]:
+        return {
+            "status": "blocked",
+            "reason": eligibility["reason"],
+        }
+
+    approval = get_approval(incident_id)
+    stored = json.loads(approval["incident_evidence"])
+    live = eligibility["live_evidence"]
+
+    fields = (
+        "pod",
+        "pod_uid",
+        "waiting_reason",
+        "termination_reason",
+        "exit_code",
+        "restart_count",
+    )
+
+    def evidence_matches(current):
+        return (
+            current.get("confirmed") is True
+            and all(
+                stored.get(field) == current.get(field)
+                for field in fields
+            )
+        )
+
+    if not evidence_matches(live):
+        return {
+            "status": "blocked",
+            "reason": "Incident evidence changed after approval",
+        }
+
+    if not execute:
+        return {
+            "status": "dry_run_passed",
+            "reason": "Approval and live evidence match",
+            "target": f"{NAMESPACE}/{DEPLOYMENT}",
+        }
+
+    # Disabled by default. Never enabled on Render.
+    if os.getenv("OPSPILOT_ENABLE_DEMO_RESTART") != "1":
+        return {
+            "status": "blocked",
+            "reason": "Demo restart feature is disabled",
+        }
+
+    # Defense in depth: never restart the main OpsPilot app.
+    if (
+        NAMESPACE != "opspilot"
+        or DEPLOYMENT != "opspilot-demo"
+        or APP_LABEL != "app=opspilot-demo"
+    ):
+        return {
+            "status": "blocked",
+            "reason": "Target is outside demo allowlist",
+        }
+
+    # Consume the approval atomically.
+    claimed = claim_approved_action(incident_id)
+
+    if claimed is None:
+        return {
+            "status": "blocked",
+            "reason": "Approval already used, expired, or invalid",
+        }
+
+    # Recheck Kubernetes after claiming the approval.
+    fresh = get_live_restart_evidence()
+
+    if not evidence_matches(fresh):
+        return {
+            "status": "blocked",
+            "reason": "Live incident changed before execution",
+        }
+
+    try:
+        subprocess.run(
+            [
+                "kubectl",
+                "--context",
+                "opspilot",
+                "rollout",
+                "restart",
+                "deployment/opspilot-demo",
+                "-n",
+                "opspilot",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, OSError) as error:
+        return {
+            "status": "execution_failed",
+            "execution_attempted": True,
+            "restart_command_succeeded": False,
+            "reason": type(error).__name__,
+            "target": "opspilot/opspilot-demo",
+        }
+
+    recovery = verify_recovery(timeout_seconds=120)
+
+    return {
+        "execution_attempted": True,
+        "restart_command_succeeded": True,
+        "status": (
+            "recovered"
+            if recovery["recovered"]
+            else "recovery_not_verified"
+        ),
+        "target": "opspilot/opspilot-demo",
+        "recovery": recovery,
+    }

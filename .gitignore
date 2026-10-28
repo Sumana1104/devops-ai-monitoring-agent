@@ -43,3 +43,14 @@ chroma/
 
 # Local backups
 *.bak
+
+# Local development snapshots and patches
+*.backup
+*.save
+*.before-*
+*.pre-*
+*.patch
+*.patch.txt
+
+# Test caches
+.pytest_cache/

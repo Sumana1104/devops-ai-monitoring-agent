@@ -1,9 +1,10 @@
 from fastapi import FastAPI, Request
 import hmac
-from fastapi import HTTPException	
+from fastapi import HTTPException
 import requests
 import os
 from api_service.app.approval_store import decide_approval
+from ai_service.app.remediation_executor import execute_approved_remediation
 
 app = FastAPI()
 
@@ -62,10 +63,46 @@ async def telegram_webhook(request: Request):
         if not accepted:
             return {"status": "invalid_or_expired_approval"}
 
+        remediation_check = None
+
+        if decision == "approve":
+            remediation_check = execute_approved_remediation(
+                incident_id,
+                execute=False,
+            )
+
         print("Incident ID:", incident_id)
         print("Decision:", decision)
 
-        return {"status": "decision_recorded"}
+        # Acknowledge the button press in Telegram.
+        confirmation = (
+            "Approval recorded. Remediation is not yet executed."
+            if decision == "approve"
+            else "Incident remediation rejected."
+        )
+
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery",
+                json={
+                    "callback_query_id": callback["id"],
+                    "text": confirmation,
+                    "show_alert": True,
+                },
+                timeout=5,
+            ).raise_for_status()
+        except (requests.RequestException, KeyError) as error:
+            print(
+                "Telegram callback acknowledgement failed:",
+                type(error).__name__,
+            )
+
+        return {
+            "status": "decision_recorded",
+            "decision": decision,
+            "remediation_executed": False,
+            "remediation_check": remediation_check,
+        }
 
 
 

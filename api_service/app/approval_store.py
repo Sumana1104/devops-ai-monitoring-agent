@@ -12,7 +12,7 @@ DB_PATH = os.getenv(
 )
 
 NAMESPACE = "opspilot"
-DEPLOYMENT = "opspilot"
+DEPLOYMENT = "opspilot-demo"
 
 ALLOWED_ACTIONS = {
     "restart_deployment",
@@ -20,8 +20,22 @@ ALLOWED_ACTIONS = {
 }
 
 
+class ClosingConnection(sqlite3.Connection):
+    """Keep SQLite commit/rollback behavior, then explicitly close the handle.
+
+    sqlite3's ordinary `with connection:` does not close the connection.
+    Preserve the existing connect() API and all approval/claim semantics.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def connect():
-    db = sqlite3.connect(DB_PATH, timeout=10)
+    db = sqlite3.connect(DB_PATH, timeout=10, factory=ClosingConnection)
 
     db.execute("""
         CREATE TABLE IF NOT EXISTS approvals (
@@ -207,4 +221,4 @@ def claim_approved_action(incident_id):
         if result.rowcount != 1:
             return None
 
-        return get_approval(incident_id)
+    return get_approval(incident_id)

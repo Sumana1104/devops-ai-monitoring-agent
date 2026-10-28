@@ -16,6 +16,7 @@ def request_incident_approval(
     summary,
     incident_type=None,
     incident_evidence=None,
+    investigation_id=None,
 ):
     """
     Prepare an approval for a currently verified
@@ -42,6 +43,7 @@ def request_incident_approval(
     # Bind this approval to the observed pod and crash.
     evidence = {
         "pod": live["pod"],
+        "pod_uid": live["pod_uid"],
         "waiting_reason": live["waiting_reason"],
         "termination_reason": live["termination_reason"],
         "exit_code": live["exit_code"],
@@ -51,13 +53,20 @@ def request_incident_approval(
     incident_id = create_approval(
         action=action,
         namespace="opspilot",
-        deployment="opspilot",
+        deployment="opspilot-demo",
         incident_type=incident_type,
         incident_evidence=evidence,
         ttl_seconds=600,
     )
 
     approval = get_approval(incident_id)
+
+    # Link BEFORE sending Telegram so an immediate button click can record the
+    # real investigation/outcome. Legacy manual tests remain possible but are
+    # not presented as AI-driven historical incidents.
+    if investigation_id:
+        from ai_service.app.incident_history import link_approval
+        link_approval(investigation_id, incident_id)
 
     message_id = send_approval_request(
         incident_id=incident_id,
@@ -66,7 +75,7 @@ def request_incident_approval(
             f"{summary}\n"
             f"Pod: {evidence['pod']}\n"
             f"Failure: {evidence['waiting_reason']}\n"
-            "Target: deployment/opspilot\n"
+            "Target: deployment/opspilot-demo\n"
             "Namespace: opspilot"
         ),
     )

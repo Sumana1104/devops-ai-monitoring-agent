@@ -1,3 +1,4 @@
+import os
 
 import json
 import subprocess
@@ -20,8 +21,8 @@ def get_pod_health():
         result = subprocess.run(
             [
                 "kubectl", "get", "pods",
-                "-n", "opspilot",
-                "-l", "app=opspilot",
+                "-n", os.getenv("OPSPILOT_NAMESPACE", "opspilot"),
+                "-l", os.getenv("OPSPILOT_APP_LABEL", "app=opspilot"),
                 "-o", "json",
             ],
             capture_output=True,

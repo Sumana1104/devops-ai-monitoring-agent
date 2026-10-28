@@ -1,0 +1,40 @@
+name: OpsPilot AI flow tests
+
+on:
+  push:
+    paths:
+      - "ai_service/app/**"
+      - "ai_service/knowledge/**"
+      - "api_service/app/**"
+      - "opspilot_integration/**"
+      - "tests/test_ai_flow.py"
+      - "tests/test_alert_freshness.py"
+      - ".github/workflows/opspilot-ai-flow.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ai-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install lightweight test dependencies
+        run: python -m pip install -r opspilot_integration/requirements-ai-flow-test.txt
+      - name: Offline integration tests (no secrets or paid APIs)
+        run: |
+          python tests/test_ai_flow.py -q
+          python tests/test_alert_freshness.py -q
+      - name: Compile graph and bridge source
+        run: python -m py_compile ai_service/app/ai_agent.py opspilot_integration/bridge.py opspilot_integration/alert_freshness.py opspilot_integration/run_ai_bridge.py

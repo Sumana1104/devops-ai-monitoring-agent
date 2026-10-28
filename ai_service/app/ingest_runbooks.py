@@ -5,6 +5,7 @@ from ai_service.app.rag_tools import (
     generate_embedding,
     get_collection,
 )
+from ai_service.app.incident_history import redact
 
 RUNBOOK_DIR = (
     Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ def ingest_runbooks():
         raise RuntimeError("No runbooks found")
 
     for file in files:
-        text = file.read_text(encoding="utf-8")
+        text = redact(file.read_text(encoding="utf-8"))[:8000]
 
         if not text.strip():
             continue
@@ -39,7 +40,7 @@ def ingest_runbooks():
             embeddings=[generate_embedding(text)],
             metadatas=[{
                 "incident_id": file.stem,
-                "type": "reviewed_runbook",
+                "type": "runbook",
                 "category": category,
                 "source": file.name,
             }],

@@ -1,0 +1,29 @@
+# Merge with observability/docker-compose.yml. Existing Grafana, Tempo, Loki,
+# collector volumes remain intact; only Prometheus config is replaced in memory.
+services:
+  prometheus:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ../opspilot_integration/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../opspilot_integration/observability/alerts.yml:/etc/prometheus/opspilot-alerts.yml:ro
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: opspilot-alertmanager
+    # Read the mode-0600 token as the local operator, not as container root.
+    user: "${OPSPILOT_RUN_UID:-1000}:${OPSPILOT_RUN_GID:-1000}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/tmp/opspilot-alertmanager"
+    volumes:
+      - ../opspilot_integration/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ../opspilot_integration/runtime/alert_token:/etc/alertmanager/opspilot-alert-token:ro
+    ports:
+      - "127.0.0.1:19093:9093"
+  grafana:
+    volumes:
+      - ../opspilot_integration/observability/grafana/provisioning/datasources/opspilot.yml:/etc/grafana/provisioning/datasources/opspilot.yml:ro
+      - ../opspilot_integration/observability/grafana/provisioning/dashboards/opspilot.yml:/etc/grafana/provisioning/dashboards/opspilot.yml:ro
+      - ../opspilot_integration/observability/grafana/dashboards:/etc/grafana/dashboards/opspilot:ro

@@ -1,0 +1,12 @@
+# Local WSL bridge only; keep heavyweight embedding dependencies out of the demo image.
+fastapi>=0.115,<1
+uvicorn>=0.30,<1
+python-dotenv>=1,<2
+requests>=2.32,<3
+groq>=1,<2
+langgraph>=1,<2
+pydantic>=2.9,<3
+typing-extensions>=4.5
+chromadb>=1,<2
+sentence-transformers>=3,<6
+httpx>=0.27,<1

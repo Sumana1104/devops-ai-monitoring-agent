@@ -1,0 +1,4 @@
+# Keep incident snapshots and vector indexes local, not in GitHub.
+/chroma/
+/opspilot_history.sqlite3
+/opspilot_history.sqlite3-*
