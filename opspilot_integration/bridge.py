@@ -30,6 +30,7 @@ os.environ.setdefault("OPSPILOT_APP_LABEL", "app=opspilot-demo")
 os.environ.setdefault("OPSPILOT_DEPLOYMENT", "opspilot-demo")
 
 app = FastAPI(title="OpsPilot Local Integration Bridge", version="1.0")
+RUNTIME_VERSION = "opspilot-stability-1"
 log = logging.getLogger("opspilot.bridge")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 _seen: dict[str, float] = {}
@@ -50,12 +51,8 @@ def telegram_api(method: str, body: dict) -> dict:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN in local env")
-    res = requests.post(f"https://api.telegram.org/bot{token}/{method}", json=body, timeout=15)
-    res.raise_for_status()
-    payload = res.json()
-    if not payload.get("ok"):
-        raise RuntimeError("Telegram rejected " + method)
-    return payload
+    from api_service.app.telegram_notifications import _telegram_request
+    return _telegram_request(method, token, body, timeout=15)
 
 
 def telegram_text(body: str) -> None:
@@ -141,7 +138,7 @@ def process_crash_evidence(evidence: dict, source: str, investigation_id=None, a
             action="restart_deployment",
             summary=summary,
             incident_type="application_failure",
-            incident_evidence={},
+            incident_evidence=evidence,
             investigation_id=investigation_id,
         )
         finish_notification(episode_id, result["incident_id"])
@@ -262,6 +259,7 @@ def health():
     return {
         "status": "ok",
         "local_bridge": True,
+        "runtime_version": RUNTIME_VERSION,
         "telegram_configured": telegram_configured(),
         "demo_restart_enabled": os.getenv("OPSPILOT_ENABLE_DEMO_RESTART") == "1",
         "ai_pipeline": "alertmanager-langgraph-rag-groq-v1",

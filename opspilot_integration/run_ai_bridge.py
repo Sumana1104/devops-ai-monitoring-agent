@@ -51,7 +51,22 @@ def main():
         raise SystemExit("kubectl/docker unavailable in PATH. No processes started.")
     with socket.socket() as probe:
         if probe.connect_ex(("127.0.0.1", 18008)) == 0:
-            raise SystemExit("Port 18008 is already occupied. Ctrl+C the OLD bridge terminal first; do not start another copy.")
+            try:
+                existing = requests.get("http://127.0.0.1:18008/health", timeout=5)
+                existing.raise_for_status()
+                info = existing.json()
+            except (requests.RequestException, ValueError):
+                raise SystemExit("Port 18008 is occupied; existing service could not be verified. Nothing stopped or started.") from None
+            if not isinstance(info, dict) or info.get("local_bridge") is not True:
+                raise SystemExit("Port 18008 belongs to another service. Nothing stopped or started.")
+            mode = info.get("demo_restart_enabled")
+            print("Existing bridge actual restart setting:", mode, flush=True)
+            print("Existing bridge runtime version:", info.get("runtime_version", "older version"), flush=True)
+            requested = bool(args.enable_demo_restart)
+            if type(mode) is bool and mode == requested and info.get("runtime_version") == "opspilot-stability-1":
+                print("Bridge already running in the requested mode. No duplicate started. Its supervisor/tunnel ownership is unchanged.")
+                return
+            raise SystemExit("Stop ONLY the existing bridge in its terminal, then rerun this command to load the requested version/mode. Nothing was stopped automatically.")
     subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"], check=True, timeout=20)
     subprocess.run(["kubectl", "--context", "opspilot", "-n", "opspilot", "get", "deployment", "opspilot-demo"],
                    check=True, timeout=20)
@@ -125,8 +140,11 @@ def main():
             if stop.wait(1):
                 break
         if not good:
-            raise SystemExit("Prometheus cannot scrape the healthy demo yet. Check Targets/lastError and Docker-to-WSL port 19110. No AI bridge started and no remediation attempted.")
-        print("PASS: Prometheus sees demo up=1. Starting Alertmanager -> AI bridge.", flush=True)
+            # A crashed workload is exactly when the incident bridge is needed.
+            # Scrape failure remains a real monitoring fault, never fake health.
+            print("MONITORING DEGRADED: Prometheus cannot currently scrape the demo. Starting the bridge so alerts/approvals can still be handled; no healthy state or remediation is implied.", flush=True)
+        else:
+            print("PASS: Prometheus sees demo up=1. Starting Alertmanager -> AI bridge.", flush=True)
         print("Real demo restarts enabled:", bool(args.enable_demo_restart), flush=True)
         print("Keep your existing Cloudflare tunnel running; webhook path remains /telegram/webhook.", flush=True)
         bridge = subprocess.Popen([

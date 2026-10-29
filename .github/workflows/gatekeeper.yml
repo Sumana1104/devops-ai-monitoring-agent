@@ -6,6 +6,9 @@ on:
       tests-result:
         required: true
         type: string
+      ai-result:
+        required: true
+        type: string
       build-result:
         required: true
         type: string
@@ -32,11 +35,12 @@ jobs:
     outputs:
       authorized: ${{ steps.check.outputs.authorized }}
     steps:
-      - name: Check results, signature, and CodeQL findings
+      - name: Check required results and CodeQL findings
         id: check
         uses: actions/github-script@v8
         env:
           TESTS_RESULT: ${{ inputs.tests-result }}
+          AI_RESULT: ${{ inputs.ai-result }}
           BUILD_RESULT: ${{ inputs.build-result }}
           TRIVY_RESULT: ${{ inputs.trivy-result }}
           CODEQL_RESULT: ${{ inputs.codeql-result }}
@@ -45,6 +49,7 @@ jobs:
             core.setOutput('authorized', 'false');
             const checks = {
               'API tests': process.env.TESTS_RESULT,
+              'AI incident and safety tests': process.env.AI_RESULT,
               'Docker build and startup': process.env.BUILD_RESULT,
               'Trivy': process.env.TRIVY_RESULT,
               'CodeQL': process.env.CODEQL_RESULT,

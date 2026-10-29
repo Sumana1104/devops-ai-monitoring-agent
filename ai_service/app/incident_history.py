@@ -126,6 +126,14 @@ def get_investigation(investigation_id):
     return decode(row) if row else None
 
 
+def get_investigation_for_approval(approval_id):
+    """Resolve the existing linked journal entry; never create an approval."""
+    with database() as db:
+        row = db.execute("SELECT * FROM ai_investigations WHERE approval_id=?",
+                         (approval_id,)).fetchone()
+    return decode(row) if row else None
+
+
 def mark_indexed(investigation_id):
     with database() as db:
         db.execute("UPDATE ai_investigations SET indexed=1 WHERE investigation_id=?", (investigation_id,))

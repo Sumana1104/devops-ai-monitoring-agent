@@ -40,6 +40,18 @@ def request_incident_approval(
     if not isinstance(incident_evidence, dict):
         raise ValueError("Incident evidence must be a dictionary")
 
+    # New graph/operator callers bind the proposal to the exact observed Pod.
+    # A normal retry count increase is allowed, but a replacement Pod, a new
+    # failure signature or invalid/decreasing counters require a new review.
+    if incident_evidence:
+        fields = ("pod", "pod_uid", "waiting_reason", "termination_reason", "exit_code")
+        previous_count = incident_evidence.get("restart_count")
+        current_count = live.get("restart_count")
+        if (any(incident_evidence.get(field) != live.get(field) for field in fields)
+                or type(previous_count) is not int or type(current_count) is not int
+                or not 0 <= previous_count <= current_count):
+            raise ValueError("Live incident changed before approval creation")
+
     # Bind this approval to the observed pod and crash.
     evidence = {
         "pod": live["pod"],

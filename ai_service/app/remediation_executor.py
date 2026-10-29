@@ -296,12 +296,19 @@ def execute_approved_remediation(incident_id, execute=False):
         "waiting_reason",
         "termination_reason",
         "exit_code",
-        "restart_count",
     )
 
     def evidence_matches(current):
+        # Kubernetes retries the same crashing container while a human reviews
+        # approval. Bind to its pod UID and crash signature, not an exact retry
+        # counter. Missing, invalid or decreasing counters still fail closed.
+        saved_restarts = stored.get("restart_count")
+        current_restarts = current.get("restart_count")
         return (
             current.get("confirmed") is True
+            and type(saved_restarts) is int
+            and type(current_restarts) is int
+            and 0 <= saved_restarts <= current_restarts
             and all(
                 stored.get(field) == current.get(field)
                 for field in fields

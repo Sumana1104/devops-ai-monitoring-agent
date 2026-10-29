@@ -3,6 +3,22 @@ import os
 import requests
 
 
+def _telegram_request(method, token, body, timeout=15):
+    """Keep credential-bearing request URLs out of exceptions and logs."""
+    try:
+        response = requests.post(
+            f"https://api.telegram.org/bot{token}/{method}",
+            json=body, timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as error:
+        raise RuntimeError("Telegram request failed (" + type(error).__name__ + ")") from None
+    if not isinstance(payload, dict) or payload.get("ok") is not True or "result" not in payload:
+        raise RuntimeError("Telegram rejected the request")
+    return payload
+
+
 def send_approval_request(incident_id, action, summary):
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -35,21 +51,14 @@ def send_approval_request(incident_id, action, summary):
         ]
     }
 
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={
+    data = _telegram_request(
+        "sendMessage", token, {
             "chat_id": chat_id,
             "text": text,
             "reply_markup": keyboard,
         },
         timeout=15,
     )
-
-    response.raise_for_status()
-    data = response.json()
-
-    if not data.get("ok"):
-        raise RuntimeError("Telegram rejected the message")
 
     return data["result"]["message_id"]
 
@@ -70,17 +79,10 @@ def send_manual_review_notification(incident):
         "No Kubernetes remediation will execute."
     )
 
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": text},
+    result = _telegram_request(
+        "sendMessage", token, {"chat_id": chat_id, "text": text},
         timeout=15,
     )
-    response.raise_for_status()
-
-    result = response.json()
-    if not result.get("ok"):
-        raise RuntimeError("Telegram rejected notification")
-
     return result["result"]["message_id"]
 
 
@@ -89,9 +91,6 @@ def send_remediation_result_notification(incident_id, result):
     Notify the configured Telegram chat of a remediation outcome.
     Does not approve incidents or modify Kubernetes.
     """
-    import os
-    import requests
-
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
@@ -112,22 +111,15 @@ def send_remediation_result_notification(incident_id, result):
     heading = messages.get(status, "Remediation status unknown")
 
     message = (
-        f"OpsPilot Remediation Result\\n"
-        f"Incident: {incident_id}\\n"
-        f"Target: {target}\\n"
+        f"OpsPilot Remediation Result\n"
+        f"Incident: {incident_id}\n"
+        f"Target: {target}\n"
         f"Status: {heading}"
     )
 
-    response = requests.post(
-        f"https://api.telegram.org/bot{token}/sendMessage",
-        json={"chat_id": chat_id, "text": message},
+    data = _telegram_request(
+        "sendMessage", token, {"chat_id": chat_id, "text": message},
         timeout=10,
     )
-
-    response.raise_for_status()
-    data = response.json()
-
-    if not data.get("ok"):
-        raise RuntimeError("Telegram rejected the notification")
 
     return data["result"]["message_id"]
