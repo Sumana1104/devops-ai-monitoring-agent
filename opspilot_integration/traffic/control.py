@@ -50,11 +50,16 @@ def record(incident_id):
     return value
 
 
-def reserve(alert):
+def reserve(alert, retry_of=None):
     key = hashlib.sha256(json.dumps([alert["labels"], alert["startsAt"]], sort_keys=True).encode()).hexdigest()
     with db() as c:
         # One outstanding/claimed request globally for this fixed experiment.
         c.execute("BEGIN IMMEDIATE")
+        if retry_of is not None:
+            parent = c.execute("SELECT * FROM traffic_incidents WHERE id=?", (retry_of,)).fetchone()
+            e.require(parent is not None and parent["status"] in ("investigation_or_delivery_failed", "manual_review")
+                      and json.loads(parent["alert"]) == alert, "Retry requires a matching failed/manual-review incident")
+            key = hashlib.sha256(json.dumps(["operator_retry", retry_of, key]).encode()).hexdigest()
         outstanding = c.execute("SELECT id FROM traffic_incidents WHERE status IN ('investigating','claimed') OR (status IN ('pending','approved') AND expires>?)", (time.time(),)).fetchone()
         if outstanding:
             return None
@@ -166,11 +171,11 @@ def notify(text, keyboard=None):
     return _telegram_request("sendMessage", os.environ["TELEGRAM_BOT_TOKEN"], payload)
 
 
-def process(alert):
+def process(alert, retry_of=None):
     incident_id = None
     try:
         e.firing(alert)
-        incident_id = reserve(alert)
+        incident_id = reserve(alert, retry_of=retry_of) if retry_of is not None else reserve(alert)
         if not incident_id:
             return
         state = investigate(alert)
@@ -204,6 +209,15 @@ def verify(before, timeout=240):
     # Wait out the 1m PromQL window after scaling, then require 30s stability.
     warm_until = time.monotonic()+70
     previous_counts = {}
+    diagnostics = {
+        "before": before["metrics"],
+        "client_before": {k: before["load"][k] for k in ("client_p95", "client_rps", "client_error_ratio")},
+        "thresholds": {"p95_seconds_max": .4, "latency_ratio_max": .75,
+                       "error_ratio_below": .01, "throughput_ratio_min": .8,
+                       "stable_seconds_required": 30},
+        "measurement_samples": 0, "validation_failures": 0,
+        "last_observation": None, "last_validation_error": None,
+    }
     while time.monotonic() < deadline:
         try:
             now = e.snapshot(2)
@@ -215,13 +229,28 @@ def verify(before, timeout=240):
             # Both Pods must actually serve traffic during the stable window.
             both = len(previous_counts) == 2 and set(previous_counts) == set(current_counts) and all(
                 current_counts[k] > previous_counts[k] for k in current_counts)
-            good = (time.monotonic() >= warm_until and both and m["p95"] <= .4
-                    and m["p95"] <= before["metrics"]["p95"] * .75
-                    and m["error_ratio"] < .01 and m["rps"] >= before["metrics"]["rps"]*.8
-                    and now["load"]["client_p95"] <= .4
-                    and now["load"]["client_p95"] <= before["load"]["client_p95"]*.75
-                    and now["load"]["client_error_ratio"] < .01
-                    and now["load"]["client_rps"] >= before["load"]["client_rps"]*.8)
+            checks = {
+                "warmup_complete": time.monotonic() >= warm_until,
+                "both_pods_serving": both,
+                "server_p95_within_400ms": m["p95"] <= .4,
+                "server_latency_improved_25pct": m["p95"] <= before["metrics"]["p95"]*.75,
+                "server_errors_below_1pct": m["error_ratio"] < .01,
+                "server_throughput_retained_80pct": m["rps"] >= before["metrics"]["rps"]*.8,
+                "client_p95_within_400ms": now["load"]["client_p95"] <= .4,
+                "client_latency_improved_25pct": now["load"]["client_p95"] <= before["load"]["client_p95"]*.75,
+                "client_errors_below_1pct": now["load"]["client_error_ratio"] < .01,
+                "client_throughput_retained_80pct": now["load"]["client_rps"] >= before["load"]["client_rps"]*.8,
+            }
+            good = all(checks.values())
+            diagnostics["measurement_samples"] += 1
+            diagnostics["last_observation"] = {
+                "after": m,
+                "client_after": {k: now["load"][k] for k in ("client_p95", "client_rps", "client_error_ratio")},
+                "same_locust_job": True, "checks": checks,
+                "failed_checks": [k for k, passed in checks.items() if not passed],
+                "stable_seconds": time.monotonic()-stable if good and stable is not None else 0,
+                "elapsed_seconds": timeout-max(0, deadline-time.monotonic()),
+            }
             if good:
                 stable = stable or time.monotonic()
                 if time.monotonic()-stable >= 30:
@@ -234,11 +263,18 @@ def verify(before, timeout=240):
             else:
                 stable = None
             previous_counts = current_counts
-        except (ValueError, KeyError, TypeError, OSError, e.subprocess.SubprocessError, e.requests.RequestException):
+        except (ValueError, KeyError, TypeError, OSError, e.subprocess.SubprocessError, e.requests.RequestException) as error:
+            diagnostics["validation_failures"] += 1
+            diagnostics["last_validation_error"] = {
+                "type": type(error).__name__,
+                "reason": str(error)[:240] if type(error) is ValueError else "Evidence read/validation failed; details omitted",
+                "elapsed_seconds": timeout-max(0, deadline-time.monotonic()),
+            }
             stable, previous_counts = None, {}
         time.sleep(5)
     return {"recovered": False, "measured_load_recovery": False,
-            "reason": "Same-load latency/error/throughput improvement not proved; no automatic rollback or further scale-up"}
+            "reason": "Same-load latency/error/throughput improvement not proved; no automatic rollback or further scale-up",
+            "diagnostics": diagnostics}
 
 
 def execute(incident_id):
