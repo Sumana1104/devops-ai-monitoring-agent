@@ -38,7 +38,7 @@ if [[ "${OPSPILOT_SKIP_CONFIRM:-}" != "1" ]]; then
   [[ "$reply" == 'yes' ]] || { echo 'Stopped without replacing demo.'; exit 0; }
 fi
 echo '=== Build image into the existing Minikube profile ==='
-minikube -p opspilot image build -t opspilot-demo:integrated-v1 -f "$HERE/demo/Dockerfile" "$HERE/demo"
+minikube -p opspilot image build -t opspilot-demo:v1-final-1 -f "$HERE/demo/Dockerfile" "$HERE/demo"
 kubectl --context opspilot apply -f "$HERE/k8s/demo.yaml"
 kubectl --context opspilot -n opspilot rollout status deployment/opspilot-demo --timeout=180s
 
@@ -57,7 +57,7 @@ echo 'PASS: localhost:19110 -> real Minikube pod. (Local demo port bound to all 
 echo '=== Start local incident + Telegram callback bridge ==='
 if ! alive 'http://127.0.0.1:18008/health'; then
   if ss -ltn 2>/dev/null | grep -q ':18008 '; then echo 'STOP: port 18008 belongs to another process'; exit 1; fi
-  nohup env PYTHONPATH="$REPO" OPSPILOT_APPROVAL_DB="$REPO/opspilot_approvals.db" OPSPILOT_ENABLE_DEMO_RESTART=0 "$PY" -m uvicorn opspilot_integration.bridge:app --host 0.0.0.0 --port 18008 > "$HERE/runtime/bridge.log" 2>&1 < /dev/null &
+  nohup env PYTHONPATH="$REPO" OPSPILOT_APPROVAL_DB="$REPO/opspilot_approvals.db" OPSPILOT_ENABLE_DEMO_RESTART=0 OPSPILOT_ENABLE_DEMO_READINESS_REPAIR=0 "$PY" -m uvicorn opspilot_integration.bridge:app --host 0.0.0.0 --port 18008 > "$HERE/runtime/bridge.log" 2>&1 < /dev/null &
   echo "$!" > "$HERE/runtime/bridge.pid"
 fi
 wait_http 'http://127.0.0.1:18008/health'

@@ -7,10 +7,10 @@ RUN apt-get update \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /tmp/requirements.txt
+COPY requirements-api.txt /tmp/requirements-api.txt
 
 # Install app dependencies, then replace setuptools' bundled libraries.
-RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt \
+RUN python -m pip install --no-cache-dir -r /tmp/requirements-api.txt \
     && python -m pip install --no-cache-dir --upgrade "setuptools==80.10.2" \
     && python -m pip check
 

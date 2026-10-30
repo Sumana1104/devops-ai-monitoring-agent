@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opspilot-traffic
+  namespace: opspilot
+  labels:
+    app: opspilot-traffic
+    opspilot-experiment: traffic-v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: opspilot-traffic
+  template:
+    metadata:
+      labels:
+        app: opspilot-traffic
+        opspilot-experiment: traffic-v1
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: traffic
+          image: opspilot-traffic:load-v1
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8080
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opspilot-traffic
+  namespace: opspilot
+  labels:
+    opspilot-experiment: traffic-v1
+spec:
+  selector:
+    app: opspilot-traffic
+  ports:
+    - port: 8080
+      targetPort: http

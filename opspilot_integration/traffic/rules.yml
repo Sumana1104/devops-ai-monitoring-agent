@@ -1,0 +1,20 @@
+groups:
+  - name: opspilot-traffic
+    rules:
+      - alert: OpsPilotTrafficOverload
+        expr: |
+          (histogram_quantile(0.95, sum by (le) (
+            rate(opspilot_traffic_duration_seconds_bucket[1m])
+          )) > 0.4)
+          and on() (sum(rate(opspilot_traffic_responses_total[1m])) > 1)
+          and on() (max(opspilot_traffic_cpu_fraction) > 0.65)
+          and on() (opspilot_traffic_evidence_available == 1)
+          and on() (time() - opspilot_traffic_observed_seconds < 30)
+          and on() (opspilot_traffic_load_burst == 1)
+        for: 30s
+        labels:
+          service: opspilot-traffic
+          severity: high
+        annotations:
+          summary: "Measured traffic p95 >400ms with CPU pressure during Locust burst"
+          description: "Investigate current Service-backed load; no repair without policy, gate and approval"

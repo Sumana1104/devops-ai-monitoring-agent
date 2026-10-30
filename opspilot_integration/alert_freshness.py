@@ -8,6 +8,8 @@ import requests
 
 SUPPORTED_ALERTS = frozenset({
     "OpsPilotDemoMetricsDown", "OpsPilotHighErrorRate", "OpsPilotHighLatency",
+    "OpsPilotDemoReadinessFailure",
+    "OpsPilotDemoOOMKilled", "OpsPilotDemoCrashLoopBackOff", "OpsPilotDemoFailedScheduling",
 })
 MAX_SCRAPE_AGE_SECONDS = 30
 
@@ -64,7 +66,7 @@ def verify_current_alert(alert, now=None):
             return result("inactive", "No matching firing alert exists in current Prometheus state")
 
         if labels["alertname"] != "OpsPilotDemoMetricsDown":
-            return result("firing", "Matching error-rate/latency rule is currently firing")
+            return result("firing", "Matching Prometheus rule is currently firing")
 
         if (labels.get("job") != "opspilot-demo" or not isinstance(labels.get("instance"), str)
                 or not labels["instance"]):

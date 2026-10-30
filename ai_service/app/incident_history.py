@@ -75,7 +75,7 @@ def reserve_investigation(alert):
 
 def save_investigation(investigation_id, state, stage="investigated"):
     fields = ("incident", "pod_info", "pod_logs", "pod_events", "pod_details",
-              "prometheus_metrics", "retrieved_knowledge", "retrieval_sources",
+              "prometheus_metrics", "readiness_evidence", "resource_incident_kind", "resource_evidence", "retrieved_knowledge", "retrieval_sources",
               "rag_status", "analysis", "safe_action", "policy_reason", "steps",
               "alert_verification")
     snapshot = {name: state[name] for name in fields if name in state}

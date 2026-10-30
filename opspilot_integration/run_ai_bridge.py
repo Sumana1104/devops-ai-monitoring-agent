@@ -27,19 +27,30 @@ def stop_child(child):
             child.wait(timeout=5)
 
 
-def main():
+def main(traffic=False, traffic_scaling=False):
     from dotenv import load_dotenv
     import requests
     load_dotenv(ROOT / ".env", override=False)
     load_dotenv(ROOT / "ai_service/.env", override=False)
+    # Plain launcher always resets optional traffic features to OFF. The
+    # explicit traffic wrapper passes booleans; .env cannot silently enable it.
+    os.environ["OPSPILOT_TRAFFIC_MONITORING"] = "1" if traffic else "0"
+    os.environ["OPSPILOT_ENABLE_TRAFFIC_SCALING"] = "1" if traffic and traffic_scaling else "0"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--enable-demo-restart", action="store_true",
                         help="Allow approved demo restarts; NEVER bypasses human approval")
+    parser.add_argument("--enable-demo-readiness-repair", action="store_true",
+                        help="Allow only approved demo readiness.flag removal; NEVER bypasses approval")
+    parser.add_argument("--enable-oom-repair", action="store_true",
+                        help="Allow approved, bounded memory-limit increases of opspilot/opspilot-demo only")
     args = parser.parse_args()
     os.chdir(ROOT)
     os.environ["PATH"] = str(Path.home() / ".local/bin") + os.pathsep + os.environ.get("PATH", "")
     os.environ["OPSPILOT_DISABLE_WATCHER"] = "0"  # Health/dedup maintenance ONLY, never approval.
     os.environ["OPSPILOT_ENABLE_DEMO_RESTART"] = "1" if args.enable_demo_restart else "0"
+    os.environ["OPSPILOT_ENABLE_DEMO_READINESS_REPAIR"] = "1" if args.enable_demo_readiness_repair else "0"
+    os.environ["OPSPILOT_ENABLE_OOM_REPAIR"] = "1" if args.enable_oom_repair else "0"
+    os.environ["OPSPILOT_WATCH_RESOURCE_INCIDENTS"] = "1"
     os.environ["OPSPILOT_APPROVAL_DB"] = str(ROOT / "opspilot_approvals.db")
     os.environ["OPSPILOT_RUN_UID"] = str(os.getuid())
     os.environ["OPSPILOT_RUN_GID"] = str(os.getgid())
@@ -60,10 +71,23 @@ def main():
             if not isinstance(info, dict) or info.get("local_bridge") is not True:
                 raise SystemExit("Port 18008 belongs to another service. Nothing stopped or started.")
             mode = info.get("demo_restart_enabled")
+            readiness_mode = info.get("demo_readiness_repair_enabled")
             print("Existing bridge actual restart setting:", mode, flush=True)
+            print("Existing bridge actual readiness-repair setting:", readiness_mode, flush=True)
+            print("Existing bridge actual OOM-repair setting:", info.get("oom_repair_enabled"), flush=True)
             print("Existing bridge runtime version:", info.get("runtime_version", "older version"), flush=True)
+            print("Existing traffic monitoring setting:", info.get("traffic_monitoring_enabled", False), flush=True)
+            print("Existing traffic scaling setting:", info.get("traffic_scaling_enabled", False), flush=True)
             requested = bool(args.enable_demo_restart)
-            if type(mode) is bool and mode == requested and info.get("runtime_version") == "opspilot-stability-1":
+            if (type(mode) is bool and mode == requested
+                    and type(readiness_mode) is bool and readiness_mode == bool(args.enable_demo_readiness_repair)
+                    and type(info.get("oom_repair_enabled")) is bool and info["oom_repair_enabled"] == bool(args.enable_oom_repair)
+                    and info.get("resource_incident_watch_enabled") is True
+                    and info.get("investigation_trigger") == "verified_prometheus_alert"
+                    and info.get("watcher_issues_approvals") is False
+                    and info.get("traffic_monitoring_enabled", False) == (os.getenv("OPSPILOT_TRAFFIC_MONITORING") == "1")
+                    and info.get("traffic_scaling_enabled", False) == (os.getenv("OPSPILOT_ENABLE_TRAFFIC_SCALING") == "1")
+                    and info.get("runtime_version") == "opspilot-v1-metrics-1"):
                 print("Bridge already running in the requested mode. No duplicate started. Its supervisor/tunnel ownership is unchanged.")
                 return
             raise SystemExit("Stop ONLY the existing bridge in its terminal, then rerun this command to load the requested version/mode. Nothing was stopped automatically.")
@@ -82,8 +106,13 @@ def main():
         raise SystemExit("Existing alert_token is empty; refusing to change it silently.")
     os.chmod(token, 0o600)
     compose = ["docker", "compose", "-f", str(base), "-f", str(ROOT / "opspilot_integration/compose.integration.yml")]
+    if os.getenv("OPSPILOT_TRAFFIC_MONITORING") == "1":
+        compose += ["-f", str(ROOT / "opspilot_integration/traffic/compose.yml")]
     subprocess.run(compose + ["config", "--quiet"], check=True, timeout=30)
-    subprocess.run(compose + ["up", "-d", "prometheus", "alertmanager"], check=True, timeout=180)
+    # Recreate only these two monitoring services so atomic source replacements
+    # cannot leave their single-file config mounts pointing at old inodes.
+    # No volumes are deleted, and other Compose services are not restarted.
+    subprocess.run(compose + ["up", "-d", "--no-deps", "--force-recreate", "prometheus", "alertmanager"], check=True, timeout=180)
     stop = threading.Event()
     port_process = [None]
 
@@ -146,6 +175,11 @@ def main():
         else:
             print("PASS: Prometheus sees demo up=1. Starting Alertmanager -> AI bridge.", flush=True)
         print("Real demo restarts enabled:", bool(args.enable_demo_restart), flush=True)
+        print("Real demo readiness repairs enabled:", bool(args.enable_demo_readiness_repair), flush=True)
+        print("Real bounded OOM repairs enabled:", bool(args.enable_oom_repair), flush=True)
+        print("Traffic monitoring enabled:", os.getenv("OPSPILOT_TRAFFIC_MONITORING") == "1", flush=True)
+        print("Real traffic scaling enabled:", os.getenv("OPSPILOT_ENABLE_TRAFFIC_SCALING") == "1", flush=True)
+        print("Metrics-first investigation: Prometheus -> Alertmanager -> LangGraph/RAG/Groq. The observer never starts AI.", flush=True)
         print("Keep your existing Cloudflare tunnel running; webhook path remains /telegram/webhook.", flush=True)
         bridge = subprocess.Popen([
             sys.executable, "-m", "uvicorn", "opspilot_integration.bridge:app",

@@ -1,0 +1,5 @@
+services:
+  prometheus:
+    volumes:
+      - ../opspilot_integration/traffic/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../opspilot_integration/traffic/rules.yml:/etc/prometheus/traffic-alerts.yml:ro

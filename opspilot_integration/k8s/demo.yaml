@@ -20,7 +20,7 @@ spec:
           emptyDir: {}
       containers:
         - name: opspilot-demo
-          image: opspilot-demo:integrated-v1
+          image: opspilot-demo:v1-final-1
           imagePullPolicy: Never
           # Persistent only while this pod exists. A human-approved rollout
           # creates a fresh pod and clears the intentional crash flag.
@@ -42,7 +42,7 @@ spec:
               memory: 256Mi
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             periodSeconds: 5
           livenessProbe:

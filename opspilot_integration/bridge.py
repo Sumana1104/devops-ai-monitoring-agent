@@ -16,6 +16,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi.responses import Response
 
 from opspilot_integration.alert_freshness import SUPPORTED_ALERTS, verify_current_alert
 
@@ -30,7 +31,7 @@ os.environ.setdefault("OPSPILOT_APP_LABEL", "app=opspilot-demo")
 os.environ.setdefault("OPSPILOT_DEPLOYMENT", "opspilot-demo")
 
 app = FastAPI(title="OpsPilot Local Integration Bridge", version="1.0")
-RUNTIME_VERSION = "opspilot-stability-1"
+RUNTIME_VERSION = "opspilot-v1-metrics-1"
 log = logging.getLogger("opspilot.bridge")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 _seen: dict[str, float] = {}
@@ -77,16 +78,21 @@ def first_time(key: str, ttl: float = 600.0) -> bool:
         return True
 
 
-def run_ai_investigation(incident: str, investigation_id=None) -> tuple[dict | None, str | None]:
+def run_ai_investigation(incident: str, investigation_id=None, resource_kind=None) -> tuple[dict | None, str | None]:
     """This is the actual handoff previously missing from the project."""
     try:
         from ai_service.app.ai_agent import agent
-        report = agent.invoke({"incident": incident, "investigation_id": investigation_id})
+        state = {"incident": incident, "investigation_id": investigation_id}
+        if resource_kind is not None:
+            if resource_kind not in ("oomkilled", "failed_scheduling"):
+                raise ValueError("Invalid Kubernetes incident kind")
+            state["resource_incident_kind"] = resource_kind
+        report = agent.invoke(state)
         parsed = json.loads(report["analysis"])
         if not isinstance(parsed, dict):
             raise ValueError("Expected AI JSON object")
         parsed.update({name: report.get(name) for name in
-                       ("safe_action", "policy_reason", "retrieval_sources", "rag_status", "steps")})
+                       ("safe_action", "policy_reason", "retrieval_sources", "rag_status", "steps", "resource_evidence")})
         return parsed, None
     except Exception as exc:
         log.exception("AI investigation could not complete")
@@ -179,6 +185,13 @@ def filter_non_current_alert(investigation_id, verification, checks):
 
 
 def process_alert(alert: dict) -> None:
+    # Resource RCA is initiated by a currently firing real metric alert, never
+    # by the periodic Kubernetes observer itself.
+    name = (alert.get("labels") or {}).get("alertname")
+    if name in {"OpsPilotDemoOOMKilled", "OpsPilotDemoFailedScheduling"}:
+        from opspilot_integration.resource_incidents import process_current_incident
+        process_current_incident(alert=alert)
+        return
     from ai_service.app.incident_history import reserve_investigation, redact
     investigation_id = reserve_investigation(alert)
     if investigation_id is None:
@@ -225,13 +238,33 @@ def process_alert(alert: dict) -> None:
             process_crash_evidence(live, name, investigation_id=investigation_id, ai_summary=details)
             return
         details += "\nLive state changed before approval; manual review required."
+    elif analysis.get("safe_action") == "clear_demo_readiness_flag":
+        from ai_service.app.readiness_remediation import get_live_readiness_evidence, claim_notification
+        live = get_live_readiness_evidence()
+        if live.get("confirmed"):
+            if not claim_notification(live["fault_id"]):
+                log.info("Suppressed duplicate/uncertain readiness approval for this fault")
+                return
+            try:
+                from api_service.app.incident_notification import request_incident_approval
+                request_incident_approval(
+                    action="clear_demo_readiness_flag", summary=details,
+                    incident_type="readiness_failure", incident_evidence=live,
+                    investigation_id=investigation_id,
+                )
+            except Exception:
+                log.exception("Readiness approval delivery failed or is uncertain; automatic resend suppressed")
+            return
+        details += "\nLive readiness incident changed before approval; manual review required."
     telegram_text(details + "\nNo remediation approval issued. No Kubernetes changes executed.")
 
 
 def watch_kubernetes() -> None:
     from opspilot_integration.incident_dedup import demo_is_healthy, observe_demo_health
-    while not _stop.wait(15):
+    from opspilot_integration.kubernetes_metrics import refresh
+    while not _stop.wait(10):
         try:
+            refresh()  # Read-only metric observation; no AI/notification/repair.
             evidence = inspect_crash()
             if evidence.get("confirmed"):
                 # Watcher never bypasses LangGraph/Groq/RAG to create approval.
@@ -244,6 +277,14 @@ def watch_kubernetes() -> None:
 
 @app.on_event("startup")
 def startup():
+    _stop.clear()
+    if os.getenv("OPSPILOT_TRAFFIC_MONITORING") == "1":
+        def observe_traffic():
+            from opspilot_integration.traffic.evidence import refresh
+            while not _stop.is_set():
+                refresh()  # Read-only, no AI/approvals.
+                _stop.wait(10)
+        threading.Thread(target=observe_traffic, daemon=True).start()
     if os.getenv("OPSPILOT_DISABLE_WATCHER") != "1":
         threading.Thread(target=watch_kubernetes, name="opspilot-k8s-watcher", daemon=True).start()
     log.info("OpsPilot bridge started. Real remediation enabled: %s", os.getenv("OPSPILOT_ENABLE_DEMO_RESTART") == "1")
@@ -258,13 +299,33 @@ def shutdown():
 def health():
     return {
         "status": "ok",
+        "traffic_extension_version": "locust-capacity-1",
+        "traffic_monitoring_enabled": os.getenv("OPSPILOT_TRAFFIC_MONITORING") == "1",
+        "traffic_scaling_enabled": os.getenv("OPSPILOT_ENABLE_TRAFFIC_SCALING") == "1",
         "local_bridge": True,
         "runtime_version": RUNTIME_VERSION,
         "telegram_configured": telegram_configured(),
         "demo_restart_enabled": os.getenv("OPSPILOT_ENABLE_DEMO_RESTART") == "1",
+        "demo_readiness_repair_enabled": os.getenv("OPSPILOT_ENABLE_DEMO_READINESS_REPAIR") == "1",
+        "oom_repair_enabled": os.getenv("OPSPILOT_ENABLE_OOM_REPAIR") == "1",
+        "resource_incident_watch_enabled": os.getenv("OPSPILOT_WATCH_RESOURCE_INCIDENTS") == "1",
         "ai_pipeline": "alertmanager-langgraph-rag-groq-v1",
         "watcher_issues_approvals": False,
+        "investigation_trigger": "verified_prometheus_alert",
+        "watcher_requires_ai_policy": True,
     }
+
+
+@app.get("/metrics")
+def kubernetes_metrics():
+    from opspilot_integration.kubernetes_metrics import render
+    return Response(render(), media_type="text/plain; version=0.0.4; charset=utf-8")
+
+
+@app.get("/traffic/metrics")
+def traffic_metrics():
+    from opspilot_integration.traffic.evidence import render
+    return Response(render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.post("/alerts")
@@ -294,6 +355,13 @@ async def alerts(request: Request, background_tasks: BackgroundTasks):
         if not all(isinstance(k, str) and isinstance(v, str) for k, v in labels.items()):
             continue
         name = labels.get("alertname", "")
+        if (os.getenv("OPSPILOT_TRAFFIC_MONITORING") == "1"
+                and name == "OpsPilotTrafficOverload" and labels.get("service") == "opspilot-traffic"):
+            if alert.get("status") == "firing":
+                from opspilot_integration.traffic.control import process
+                background_tasks.add_task(process, alert)
+                count += 1
+            continue
         if name not in SUPPORTED_ALERTS:
             continue
         if labels.get("service") != "opspilot-demo":
@@ -315,7 +383,12 @@ async def alerts(request: Request, background_tasks: BackgroundTasks):
 def process_approved_callback(incident_id: str):
     try:
         from ai_service.app.remediation_executor import execute_approved_remediation
-        execute = os.getenv("OPSPILOT_ENABLE_DEMO_RESTART") == "1"
+        from api_service.app.approval_store import get_approval
+        approval = get_approval(incident_id)
+        readiness = approval and approval.get("action") == "clear_demo_readiness_flag"
+        feature = ("OPSPILOT_ENABLE_OOM_REPAIR" if approval and approval.get("action") == "increase_demo_memory_limit"
+                   else "OPSPILOT_ENABLE_DEMO_READINESS_REPAIR" if readiness else "OPSPILOT_ENABLE_DEMO_RESTART")
+        execute = os.getenv(feature) == "1"
         result = execute_approved_remediation(incident_id, execute=execute)
         outcome = str(result.get("status", "unknown"))
         why = str(result.get("reason", ""))
@@ -334,6 +407,8 @@ def process_approved_callback(incident_id: str):
             f"{outcome}\n{why[:500]}\n"
             f"Execution enabled: {execute}.\n"
             f"Restart command succeeded: {result.get('restart_command_succeeded', False)}.\n"
+            f"Approved repair command succeeded: {result.get('repair_command_succeeded', False)}.\n"
+            f"Service HTTP verified: {result.get('recovery', {}).get('service_http_verified', False)}.\n"
             f"History: {learned}.\n"
             "Only opspilot/opspilot-demo is allowlisted."
         )
@@ -367,6 +442,9 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         log.warning("Telegram callback denied: wrong user/chat")
         return {"status": "unauthorized_approver"}
     action = str(callback.get("data", ""))
+    if action.startswith(("traffic_approve:", "traffic_reject:")):
+        from opspilot_integration.traffic.control import callback as traffic_callback
+        return await traffic_callback(callback, background_tasks)
     try:
         decision, incident_id = action.split(":", 1)
     except ValueError:

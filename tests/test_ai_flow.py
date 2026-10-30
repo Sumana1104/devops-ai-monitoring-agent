@@ -486,7 +486,7 @@ class AIFlowTests(unittest.TestCase):
         self.assertEqual(set(schema["required"]), set(self.report))
         self.assertEqual(set(schema["properties"]), set(self.report))
         self.assertEqual(schema["properties"]["recommended_action"]["enum"],
-                         ["manual_review", "restart_deployment", "no_action"])
+                         ["manual_review", "restart_deployment", "clear_demo_readiness_flag", "increase_demo_memory_limit", "no_action"])
         self.assertEqual(call["reasoning_effort"], "low")
         self.assertEqual(call["max_completion_tokens"], 4096)
         self.assertEqual(self.groq.call_args.kwargs["max_retries"], 0)

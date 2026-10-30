@@ -23,6 +23,11 @@ def request_incident_approval(
     application crash. Does not execute remediation.
     """
 
+    if action == "clear_demo_readiness_flag":
+        return request_readiness_approval(summary, incident_type, incident_evidence, investigation_id)
+    if action == "increase_demo_memory_limit":
+        return request_oom_approval(summary, incident_type, incident_evidence, investigation_id)
+
     if action != "restart_deployment":
         raise ValueError("Unsupported remediation action")
 
@@ -98,3 +103,45 @@ def request_incident_approval(
         "status": "pending",
         "evidence": evidence,
     }
+
+
+def request_readiness_approval(summary, incident_type, incident_evidence, investigation_id=None):
+    from ai_service.app.readiness_remediation import (
+        ACTION, INCIDENT_TYPE, evidence_matches, get_live_readiness_evidence,
+    )
+    if incident_type != INCIDENT_TYPE:
+        raise ValueError("Unsupported readiness incident type")
+    live = get_live_readiness_evidence()
+    if not evidence_matches(incident_evidence, live):
+        raise ValueError("Live readiness incident changed before approval creation")
+    incident_id = create_approval(ACTION, incident_type=INCIDENT_TYPE, incident_evidence=live, ttl_seconds=600)
+    if investigation_id:
+        from ai_service.app.incident_history import link_approval
+        link_approval(investigation_id, incident_id)
+    message_id = send_approval_request(incident_id, ACTION, (
+        f"{summary}\nPod: {live['pod']}\n"
+        "Verified: readiness HTTP 503; liveness HTTP 200; no ready Service endpoint.\n"
+        "Repair: remove ONLY /runtime/readiness.flag; keep both probes enabled.\n"
+        "Target: deployment/opspilot-demo; namespace: opspilot"
+    ))
+    return {"incident_id": incident_id, "telegram_message_id": message_id, "status": "pending", "evidence": live}
+
+
+def request_oom_approval(summary, incident_type, incident_evidence, investigation_id=None):
+    from ai_service.app.resource_incidents import ACTION, inspect_incident, matches
+    if incident_type != "oomkilled":
+        raise ValueError("Memory action requires an OOMKilled incident")
+    live = inspect_incident()
+    if not matches(incident_evidence, live):
+        raise ValueError("OOM evidence changed or is outside bounded repair policy")
+    incident_id = create_approval(ACTION, incident_type="oomkilled", incident_evidence=live, ttl_seconds=600)
+    if investigation_id:
+        from ai_service.app.incident_history import link_approval
+        link_approval(investigation_id, incident_id)
+    # Put the exact change first, before the Telegram summary truncation point.
+    message_id = send_approval_request(incident_id, ACTION, (
+        f"Target: opspilot/opspilot-demo; Pod: {live['pod']}\n"
+        f"Proposed memory LIMIT: {live['memory_limit']} -> {live['proposed_memory_limit']}.\n"
+        "A rollout replaces the Pod. Requests, probes, image and node settings are preserved.\n"
+        "Temporary mitigation only; a memory leak is not ruled out.\n" + summary[:500]))
+    return {"incident_id": incident_id, "telegram_message_id": message_id, "status": "pending", "evidence": live}

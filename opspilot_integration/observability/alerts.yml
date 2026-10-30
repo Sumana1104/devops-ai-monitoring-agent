@@ -1,6 +1,53 @@
 groups:
   - name: opspilot-demo
     rules:
+      - alert: OpsPilotDemoOOMKilled
+        expr: |
+          (opspilot_demo_oom_active{job="opspilot-kubernetes"} == 1)
+          and on(job, instance, service) (opspilot_kubernetes_evidence_available == 1)
+          and on(job, instance) (up{job="opspilot-kubernetes"} == 1)
+        for: 10s
+        labels:
+          severity: high
+          service: opspilot-demo
+        annotations:
+          summary: "Current demo container has Kubernetes OOMKilled/137 evidence"
+          description: "Investigate real current state; memory-limit mitigation requires fresh evidence and human approval"
+      - alert: OpsPilotDemoCrashLoopBackOff
+        expr: |
+          (opspilot_demo_crash_active{job="opspilot-kubernetes"} == 1)
+          and on(job, instance, service) (opspilot_kubernetes_evidence_available == 1)
+          and on(job, instance) (up{job="opspilot-kubernetes"} == 1)
+        for: 10s
+        labels:
+          severity: high
+          service: opspilot-demo
+        annotations:
+          summary: "Current demo container has an Error CrashLoopBackOff"
+          description: "Use actual logs and Kubernetes identities; never restart from a metric alone"
+      - alert: OpsPilotDemoFailedScheduling
+        expr: |
+          (opspilot_demo_unschedulable{job="opspilot-kubernetes"} == 1)
+          and on(job, instance, service) (opspilot_kubernetes_evidence_available == 1)
+          and on(job, instance) (up{job="opspilot-kubernetes"} == 1)
+        for: 20s
+        labels:
+          severity: high
+          service: opspilot-demo
+        annotations:
+          summary: "Current demo Pod is Unschedulable"
+          description: "Read same-Pod scheduler events; manual review only, not a fourth remediation scenario"
+      - alert: OpsPilotDemoReadinessFailure
+        expr: |
+          (opspilot_demo_ready{job="opspilot-demo"} == 0)
+          and on(job, instance) (up{job="opspilot-demo"} == 1)
+        for: 20s
+        labels:
+          severity: high
+          service: opspilot-demo
+        annotations:
+          summary: "OpsPilot demo readiness flag active while metrics still scrape"
+          description: "Verify live readiness/liveness HTTP, Pod ownership and Service endpoints; never restart blindly"
       - alert: OpsPilotHighErrorRate
         expr: |
           (

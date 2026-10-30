@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def stop(message):
-    raise ValueError(message + " No restart executed by this command.")
+    raise ValueError(message + " No remediation executed by this command.")
 
 
 def root_alert(entry, history):
@@ -63,9 +63,12 @@ def retry_approval(approval_id, confirmed=False):
     entry = history.get_investigation_for_approval(approval_id)
     if not prior or not entry:
         stop("Linked approval and investigation were not found")
+    readiness_action = prior.get("action") == "clear_demo_readiness_flag"
+    oom_action = prior.get("action") == "increase_demo_memory_limit"
+    expected_action = "increase_demo_memory_limit" if oom_action else "clear_demo_readiness_flag" if readiness_action else "restart_deployment"
+    expected_type = "oomkilled" if oom_action else "readiness_failure" if readiness_action else "application_failure"
     if (prior.get("action"), prior.get("namespace"), prior.get("deployment"),
-            prior.get("incident_type")) != (
-            "restart_deployment", "opspilot", "opspilot-demo", "application_failure"):
+            prior.get("incident_type")) != (expected_action, "opspilot", "opspilot-demo", expected_type):
         stop("Action or target is outside the demo allowlist")
     expires = prior.get("expires_at")
     if type(expires) is not int or expires > int(time.time()):
@@ -76,17 +79,21 @@ def retry_approval(approval_id, confirmed=False):
     blocked = (prior.get("status") == "approved" and entry.get("stage") == "blocked"
                and outcome.get("reason") in {
                    "Incident evidence changed after approval",
+                   "Readiness incident changed after approval",
+                   "Live OOM incident changed after approval",
                    "No eligible active application crash confirmed"})
-    if not (pending or blocked) or outcome.get("execution_attempted") or outcome.get("restart_command_succeeded"):
+    if (not (pending or blocked) or outcome.get("execution_attempted")
+            or outcome.get("restart_command_succeeded") or outcome.get("repair_command_succeeded")):
         stop("Only an expired, unexecuted pending/eligible blocked request may be retried")
 
     response = requests.get("http://127.0.0.1:18008/health", timeout=5)
     response.raise_for_status()
     health = response.json()
+    feature = "oom_repair_enabled" if oom_action else "demo_readiness_repair_enabled" if readiness_action else "demo_restart_enabled"
     if (health.get("local_bridge") is not True
-            or health.get("demo_restart_enabled") is not True
+            or health.get(feature) is not True
             or health.get("runtime_version") != bridge.RUNTIME_VERSION):
-        stop("Running bridge must be the updated version with demo restart enabled")
+        stop("Running bridge must be the updated version with the incident-specific execution feature enabled")
     # Verify actual callback connectivity BEFORE reserving/issuing a new request.
     target = webhook.call("getWebhookInfo").get("url", "")
     suffix = "/telegram/webhook"
@@ -101,14 +108,26 @@ def retry_approval(approval_id, confirmed=False):
         stop("Stored evidence is invalid")
     fields = ("pod", "pod_uid", "waiting_reason", "termination_reason", "exit_code")
 
+    inspect = bridge.inspect_crash
+    if readiness_action:
+        from ai_service.app.readiness_remediation import get_live_readiness_evidence, evidence_matches
+        inspect = get_live_readiness_evidence
+    elif oom_action:
+        from ai_service.app.resource_incidents import inspect_incident, matches
+        inspect = inspect_incident
+
     def same_crash(current):
+        if readiness_action:
+            return evidence_matches(saved, current)
+        if oom_action:
+            return matches(saved, current)
         a, b = saved.get("restart_count"), current.get("restart_count")
         return (current.get("confirmed") is True
                 and all(saved.get(field) == current.get(field) for field in fields)
                 and type(a) is int and type(b) is int and 0 <= a <= b)
 
-    if before["status"] != "firing" or not same_crash(bridge.inspect_crash()):
-        stop("The original firing alert and original live crash are not both confirmed")
+    if before["status"] != "firing" or not same_crash(inspect()):
+        stop("The original firing alert and original live incident are not both confirmed")
     retry = {
         "source": "operator_requested_retry",
         "original_alert": event,
@@ -122,21 +141,22 @@ def retry_approval(approval_id, confirmed=False):
         stop("This parent request has already been retried; inspect its recorded outcome")
 
     print("Collecting fresh evidence and running LangGraph / RAG / Groq...", flush=True)
+    arguments = {"resource_kind": "oomkilled"} if oom_action else {}
     report, error = bridge.run_ai_investigation(
         "Explicit operator retry of expired unexecuted approval " + approval_id
         + ". Original Prometheus alert is still firing. Collect fresh evidence. "
-        "Do not assume the old diagnosis. No new fault was injected.", investigation)
+        "Do not assume the old diagnosis. No new fault was injected.", investigation, **arguments)
     after = bridge.verify_current_alert(event)
     bridge.save_alert_state(
         investigation, {"alert_verification": {"before_ai": before, "after_ai": after}},
         "investigated" if report else "ai_failed")
-    if not report or report.get("safe_action") != "restart_deployment":
-        stop("Fresh AI/policy requires manual review (" + str(error or "no restart proposal") + ")")
-    fresh = bridge.inspect_crash()
+    if not report or report.get("safe_action") != expected_action:
+        stop("Fresh AI/policy requires manual review (" + str(error or "no eligible proposal") + ")")
+    fresh = inspect()
     if after["status"] != "firing" or not same_crash(fresh):
-        stop("Live alert or crash changed during investigation")
+        stop("Live alert or incident changed during investigation")
     result = request_incident_approval(
-        action="restart_deployment", incident_type="application_failure",
+        action=expected_action, incident_type=expected_type,
         incident_evidence=fresh, investigation_id=investigation,
         summary=(
             "Operator-requested fresh approval; expired parent " + approval_id[:10]
@@ -146,7 +166,7 @@ def retry_approval(approval_id, confirmed=False):
             + "\nPolicy: " + str(report.get("policy_reason"))
             + "\nRAG: " + str(report.get("rag_status"))))
     print("Fresh Telegram approval sent:", result["incident_id"])
-    print("Review ONLY this new request. No approval decision or restart was executed by this command.")
+    print("Review ONLY this new request. No approval decision or remediation was executed by this command.")
     return result
 
 
@@ -156,7 +176,7 @@ def status():
         response.raise_for_status()
         payload = response.json()
         print("Bridge:", json.dumps({key: payload.get(key) for key in
-              ("status", "local_bridge", "runtime_version", "demo_restart_enabled")}))
+              ("status", "local_bridge", "runtime_version", "demo_restart_enabled", "demo_readiness_repair_enabled", "oom_repair_enabled", "investigation_trigger", "watcher_issues_approvals")}))
     except (requests.RequestException, ValueError, AttributeError) as error:
         print("Bridge unavailable:", type(error).__name__)
     try:

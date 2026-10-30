@@ -6,34 +6,6 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
-from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
-from opentelemetry.sdk.resources import Resource
-
-
-# Configure application logging.
-service_name = os.getenv("OTEL_SERVICE_NAME", "opspilot")
-
-collector_endpoint = os.getenv(
-    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    "http://host.minikube.internal:4318"
-).rstrip("/")
-
-resource = Resource.create({
-    "service.name": service_name
-})
-
-logger_provider = LoggerProvider(resource=resource)
-
-log_exporter = OTLPLogExporter(
-    endpoint=f"{collector_endpoint}/v1/logs"
-)
-
-logger_provider.add_log_record_processor(
-    BatchLogRecordProcessor(log_exporter)
-)
-
 logger = logging.getLogger("opspilot.ai")
 logger.setLevel(logging.INFO)
 logger.propagate = False
@@ -43,12 +15,19 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setLevel(logging.INFO)
 logger.addHandler(console_handler)
 
-# Send the same application logs to OpenTelemetry.
-otel_handler = LoggingHandler(
-    level=logging.INFO,
-    logger_provider=logger_provider
-)
-logger.addHandler(otel_handler)
+# Honor the standard SDK-disable setting for offline checks. Normal runtime
+# collector configuration is preserved; tests no longer try to export logs.
+logger_provider = None
+if os.getenv("OTEL_SDK_DISABLED", "false").lower() not in {"true", "1", "yes"}:
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
+    from opentelemetry.exporter.otlp.proto.http._log_exporter import OTLPLogExporter
+    from opentelemetry.sdk.resources import Resource
+
+    collector_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://host.minikube.internal:4318").rstrip("/")
+    logger_provider = LoggerProvider(resource=Resource.create({"service.name": os.getenv("OTEL_SERVICE_NAME", "opspilot")}))
+    logger_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=f"{collector_endpoint}/v1/logs")))
+    logger.addHandler(LoggingHandler(level=logging.INFO, logger_provider=logger_provider))
 
 
 app = FastAPI()

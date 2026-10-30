@@ -278,6 +278,14 @@ def execute_approved_remediation(incident_id, execute=False):
         claim_approved_action,
     )
 
+    approval = get_approval(incident_id)
+    if approval and approval.get("action") == "increase_demo_memory_limit":
+        from ai_service.app.resource_incidents import execute_oom_remediation
+        return execute_oom_remediation(incident_id, execute=execute)
+    if approval and approval.get("action") == "clear_demo_readiness_flag":
+        from ai_service.app.readiness_remediation import execute_readiness_remediation
+        return execute_readiness_remediation(incident_id, execute=execute)
+
     eligibility = check_remediation_eligibility(incident_id)
 
     if not eligibility["eligible"]:

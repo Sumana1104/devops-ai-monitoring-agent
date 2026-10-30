@@ -25,7 +25,7 @@ class IncidentReport(BaseModel):
     severity: Literal["low", "medium", "high", "critical"]
     confidence: float = Field(ge=0, le=1)
     evidence: list[str] = Field(max_length=12)
-    recommended_action: Literal["manual_review", "restart_deployment", "no_action"]
+    recommended_action: Literal["manual_review", "restart_deployment", "clear_demo_readiness_flag", "increase_demo_memory_limit", "no_action"]
 
 
 class AIReportError(RuntimeError):
@@ -77,6 +77,9 @@ class AgentState(TypedDict):
     pod_events: NotRequired[str]
     pod_details: NotRequired[str]
     live_pods: NotRequired[list]
+    readiness_evidence: NotRequired[dict]
+    resource_incident_kind: NotRequired[str]
+    resource_evidence: NotRequired[dict]
     prometheus_metrics: NotRequired[str]
     retrieved_knowledge: NotRequired[str]
     retrieval_sources: NotRequired[list]
@@ -115,6 +118,8 @@ def collect_evidence(state: AgentState):
                            for c in status.get("conditions", [])],
             "containers": [{k: c.get(k) for k in ("name", "ready", "restartCount", "state", "lastState")}
                            for c in status.get("containerStatuses", [])],
+            "probe_config": [{k: c.get(k) for k in ("name", "image", "resources", "readinessProbe", "livenessProbe")}
+                             for c in pod.get("spec", {}).get("containers", [])],
         })
         for previous in (False, True):
             args = ["logs", name, "--tail=25", "--limit-bytes=6000"]
@@ -154,8 +159,21 @@ def collect_evidence(state: AgentState):
         except (requests.RequestException, ValueError, KeyError):
             metric_lines.append(f"{metric_name}: unavailable; do not infer application health")
     text = redact(json.dumps(snapshots))
+    readiness = {"confirmed": False, "reason": "Readiness demo image not observed"}
+    if any(c.get("image") in ("opspilot-demo:readiness-v1", "opspilot-demo:v1-final-1")
+           for pod in pods for c in pod.get("spec", {}).get("containers", [])):
+        from ai_service.app.readiness_remediation import get_live_readiness_evidence
+        readiness = get_live_readiness_evidence()
+    resource = {}
+    if state.get("resource_incident_kind"):
+        from ai_service.app.resource_incidents import inspect_incident
+        resource = inspect_incident()
+        if resource.get("confirmed") is not True or resource.get("kind") != state["resource_incident_kind"]:
+            raise RuntimeError("Kubernetes incident changed before evidence collection")
     return {
         "live_pods": snapshots, "pod_info": text[:14000], "pod_details": text[:14000],
+        "readiness_evidence": readiness,
+        "resource_evidence": resource,
         "pod_logs": redact("\n".join(logs))[:24000],
         "pod_events": redact(json.dumps(events))[:10000],
         "prometheus_metrics": redact("\n".join(metric_lines)),
@@ -204,7 +222,7 @@ def investigate(state: AgentState):
         "You are OpsPilot, an evidence-driven SRE. Return ONLY a JSON object with "
         "root_cause (string), severity (low/medium/high/critical), confidence (0..1), "
         "evidence (at most 12 short strings), recommended_action "
-        "(manual_review/restart_deployment/no_action). "
+        "(manual_review/restart_deployment/clear_demo_readiness_flag/increase_demo_memory_limit/no_action). "
         "Use exactly these five fields, no extra fields, markdown or commentary. "
         "Keep root_cause under 2000 characters. "
         "Current pod/container state outranks old events, runbooks and previous incidents. "
@@ -215,14 +233,26 @@ def investigate(state: AgentState):
         "A successful scrape is not proof the application serves successful HTTP responses. "
         "For an active Error/exit-1 demo CrashLoopBackOff with intentional crash.flag logs, "
         "the demo runbook may support proposing restart_deployment; it is only a proposal. "
-        "OOMKilled, image-pull failures, readiness-only failures, network-only scrape failures "
-        "or insufficient evidence require manual_review, not a blind restart. "
+        "For the controlled readiness demo ONLY, confirmed readiness_evidence includes "
+        "a unique /runtime/readiness.flag, live /readyz HTTP 503, /healthz HTTP 200, "
+        "a Running but NotReady container and no ready Service endpoint. In this exact "
+        "case the runbook can support clear_demo_readiness_flag; it is only a proposal. "
+        "Never propose restart_deployment for a readiness-only incident. Unconfirmed "
+        "readiness failures, image-pull failures, network-only scrape failures "
+        "or insufficient evidence require manual_review. "
+        "For real OOMKilled, resource_evidence is authoritative: reason OOMKilled plus exit 137, "
+        "a currently unhealthy allowlisted container, its configured memory limit and node pressure. "
+        "Only when resource_evidence.repairable is true may you propose increase_demo_memory_limit; "
+        "the exact current/proposed limits are fixed by Python policy, never by you. "
+        "This is a temporary mitigation, not proof of a memory leak or its repair. "
+        "FailedScheduling always requires manual_review with the actual scheduler event evidence; "
+        "never propose a restart, delete selectors/taints, lower resource requests or change nodes. "
         "Never request arbitrary shell commands or execute anything. "
         "For currently healthy pods do not propose restarting. "
         "Explain uncertainty; confidence must reflect collected evidence."
     )
     content = json.dumps({k: state.get(k) for k in (
-        "incident", "pod_info", "pod_logs", "pod_events", "prometheus_metrics",
+        "incident", "pod_info", "pod_logs", "pod_events", "prometheus_metrics", "readiness_evidence", "resource_evidence",
         "retrieved_knowledge", "recent_history_summary",
     )}, ensure_ascii=False)
     model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
@@ -282,7 +312,21 @@ def select_action(state: AgentState):
     from ai_service.app.remediation_executor import get_live_restart_evidence
     report = IncidentReport.model_validate_json(state["analysis"])
     safe, reason = "manual_review", "AI proposed manual review"
-    if report.recommended_action == "no_action":
+    if state.get("resource_incident_kind") == "failed_scheduling":
+        reason = "FailedScheduling needs cause-specific manual review; no Kubernetes action is allowlisted"
+    elif report.recommended_action == "increase_demo_memory_limit":
+        from ai_service.app.resource_incidents import inspect_incident, matches
+        if state.get("resource_incident_kind") != "oomkilled":
+            reason = "Memory repair requires the dedicated current OOM investigation"
+        elif state.get("rag_status") != "ready" or report.confidence < 0.75:
+            reason = "OOM proposal requires retrieved references and confidence >= 0.75"
+        elif (matches(state.get("resource_evidence"), inspect_incident())
+              and (state["resource_evidence"].get("pod"), state["resource_evidence"].get("pod_uid"))
+              in {(p["pod"], p["uid"]) for p in state.get("live_pods", [])}):
+            safe, reason = "increase_demo_memory_limit", "Bounded current OOM mitigation; human approval and a separate feature gate are required"
+        else:
+            reason = "OOM evidence changed or limit/node pressure is outside repair policy"
+    elif report.recommended_action == "no_action":
         safe, reason = "no_action", "AI recommends no action; no execution permitted"
     elif report.recommended_action == "restart_deployment":
         if state.get("rag_status") != "ready":
@@ -297,6 +341,20 @@ def select_action(state: AgentState):
                 safe, reason = "restart_deployment", "AI proposal supported by live allowlisted demo crash"
             else:
                 reason = "Live crash changed or is not eligible; manual review required"
+    elif report.recommended_action == "clear_demo_readiness_flag":
+        from ai_service.app.readiness_remediation import evidence_matches, get_live_readiness_evidence
+        if state.get("rag_status") != "ready":
+            reason = "RAG references unavailable/empty; no approval issued"
+        elif report.confidence < 0.75:
+            reason = "AI confidence below 0.75; manual review required"
+        else:
+            live = get_live_readiness_evidence()
+            observed = {(p["pod"], p["uid"]) for p in state["live_pods"]}
+            if ((live.get("pod"), live.get("pod_uid")) in observed
+                    and evidence_matches(state.get("readiness_evidence"), live)):
+                safe, reason = "clear_demo_readiness_flag", "AI proposal supported by live allowlisted readiness flag and Service evidence"
+            else:
+                reason = "Readiness incident changed or is not eligible; manual review required"
     return {"safe_action": safe, "policy_reason": reason,
             "steps": state["steps"] + ["select_action"]}
 

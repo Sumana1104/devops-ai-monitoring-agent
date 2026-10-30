@@ -15,3 +15,9 @@ receivers:
           authorization:
             type: Bearer
             credentials_file: /etc/alertmanager/opspilot-alert-token
+inhibit_rules:
+  - source_matchers:
+      - 'alertname=~"OpsPilotDemoOOMKilled|OpsPilotDemoCrashLoopBackOff|OpsPilotDemoFailedScheduling"'
+    target_matchers:
+      - 'alertname="OpsPilotDemoMetricsDown"'
+    equal: [service]

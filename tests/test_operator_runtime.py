@@ -194,14 +194,24 @@ class LauncherExistingBridgeTests(unittest.TestCase):
 
     def test_same_verified_mode_does_not_start_duplicate(self):
         self.check({"local_bridge": True, "demo_restart_enabled": False,
-                    "runtime_version": "opspilot-stability-1"}, True)
+                    "runtime_version": "opspilot-v1-metrics-1", "demo_readiness_repair_enabled": False,
+                    "oom_repair_enabled": False, "resource_incident_watch_enabled": True, "investigation_trigger": "verified_prometheus_alert", "watcher_issues_approvals": False}, True)
+
+    def test_oom_execution_cannot_remain_enabled_when_safe_mode_requested(self):
+        self.check({"local_bridge": True, "demo_restart_enabled": False,
+                    "runtime_version": "opspilot-v1-metrics-1", "demo_readiness_repair_enabled": False,
+                    "oom_repair_enabled": True, "resource_incident_watch_enabled": True, "investigation_trigger": "verified_prometheus_alert", "watcher_issues_approvals": False}, False)
 
     def test_different_mode_is_not_silently_changed(self):
         self.check({"local_bridge": True, "demo_restart_enabled": True,
-                    "runtime_version": "opspilot-stability-1"}, False)
+                    "runtime_version": "opspilot-readiness-1", "demo_readiness_repair_enabled": False}, False)
 
     def test_old_code_requires_explicit_reload(self):
         self.check({"local_bridge": True, "demo_restart_enabled": False}, False)
+
+    def test_readiness_execution_cannot_remain_enabled_when_safe_mode_requested(self):
+        self.check({"local_bridge": True, "demo_restart_enabled": False,
+                    "runtime_version": "opspilot-readiness-1", "demo_readiness_repair_enabled": True}, False)
 
     def test_another_service_is_never_stopped(self):
         self.check({"local_bridge": False}, False)

@@ -16,6 +16,8 @@ DEPLOYMENT = "opspilot-demo"
 
 ALLOWED_ACTIONS = {
     "restart_deployment",
+    "clear_demo_readiness_flag",
+    "increase_demo_memory_limit",
     "no_action",
 }
 
@@ -92,6 +94,10 @@ def create_approval(
 ):
     if action not in ALLOWED_ACTIONS:
         raise ValueError("Action not allowlisted")
+    if action == "clear_demo_readiness_flag" and incident_type != "readiness_failure":
+        raise ValueError("Readiness action requires a readiness incident")
+    if action == "increase_demo_memory_limit" and incident_type != "oomkilled":
+        raise ValueError("Memory action requires an OOMKilled incident")
 
     if namespace != NAMESPACE or deployment != DEPLOYMENT:
         raise ValueError("Target not allowlisted")
@@ -203,7 +209,9 @@ def claim_approved_action(incident_id):
             WHERE incident_id = ?
               AND status = 'approved'
               AND expires_at > ?
-              AND action = 'restart_deployment'
+              AND (action = 'restart_deployment' OR
+                   (action = 'clear_demo_readiness_flag' AND incident_type = 'readiness_failure') OR
+                   (action = 'increase_demo_memory_limit' AND incident_type = 'oomkilled'))
               AND namespace = ?
               AND deployment = ?
               AND incident_type IS NOT NULL
