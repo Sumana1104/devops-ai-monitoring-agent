@@ -1,184 +1,182 @@
-# DevOps AI Monitoring Agent (FastAPI + Prometheus + OpenTelemetry + Kubernetes)
+# OpsPilot — AI-Assisted DevOps Incident Response
 
-A production-ready cloud-native monitoring microservice built using FastAPI, instrumented with Prometheus metrics, OpenTelemetry traces, and deployed on Kubernetes with full observability and Slack alerting.
+OpsPilot is a local SRE/DevOps portfolio project that connects monitoring, AI investigation, human approval, and controlled Kubernetes recovery.
 
-This project demonstrates real-world DevOps engineering skills including microservice development, observability, containerization, Kubernetes deployments, health probes, autoscaling, and alerting.
+It collects operational evidence, uses Groq to suggest a diagnosis, retrieves relevant runbooks with RAG, and requests approval through Telegram before executing an allowlisted remediation.
 
----
+Built with Python, FastAPI, LangGraph, Groq, Chroma, Docker, Kubernetes, Prometheus, Grafana, and GitHub Actions.
 
-## 🚀 Features
+## How It Works
 
-- FastAPI microservice with clean REST endpoints
-- Prometheus metrics exposed at `/metrics`
-- OpenTelemetry tracing with context propagation
-- Structured JSON logging
-- Slack alerting for failures
-- Kubernetes Deployment with:
-  - Liveness probe
-  - Readiness probe
-  - Resource limits
-  - Rolling updates
-- Dockerized application
-- Works with Prometheus, Grafana, Loki, Tempo, OTEL Collector
+1. **Detect:** Prometheus evaluates application and Kubernetes metrics.
+2. **Trigger:** Alertmanager sends a firing alert to the OpsPilot bridge.
+3. **Investigate:** OpsPilot collects current logs, Kubernetes state, events, and metrics.
+4. **Retrieve:** Semantic search finds relevant runbooks and previously verified outcomes.
+5. **Analyze:** Groq produces a structured diagnosis and recommended action.
+6. **Validate:** Python policy checks the recommendation against current evidence and supported actions.
+7. **Approve:** An eligible remediation requires a fresh human approval through Telegram.
+8. **Execute:** A deterministic Python function performs the approved action.
+9. **Verify:** OpsPilot checks recovery and records the actual outcome.
 
----
+The AI diagnosis is treated as a hypothesis. Recovery is recorded as verified only when the required checks pass.
 
-## 🧠 Architecture Overview
+## Architecture
 
-- FastAPI service handles requests and generates metrics/traces
-- Prometheus scrapes metrics
-- Grafana visualizes dashboards
-- OpenTelemetry Collector exports traces/logs
-- Kubernetes Deployment manages pods, probes, scaling
-- Slack Webhook sends alerts
-- Docker packages the service
-- CI/CD pipeline automates deployment
+![OpsPilot system architecture](docs/architecture/opspilot-architecture.png)
 
----
-                           ┌──────────────────────────┐
-                           │        Client / User     │
-                           └──────────────┬───────────┘
-                                          │  HTTP Requests
-                                          ▼
-                           ┌──────────────────────────┐
-                           │   FastAPI Monitoring App │
-                           │ (AI Agent + httpx calls) │
-                           └──────────────┬───────────┘
-                                          │  Generates metrics/traces/logs
-                                          ▼
-        ┌─────────────────────────┬─────────────────────────┬─────────────────────────┐
-        │                         │                         │                         │
-        ▼                         ▼                         ▼                         ▼
-┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────────────┐
-│   Prometheus Exporter    │  │ OpenTelemetry Collector  │  │      CI/CD Pipeline      │
-│ (Scrapes /metrics)       │  │ (Traces + Logs pipeline) │  │ (GitHub → Build → Deploy)│
-└──────────────┬───────────┘  └──────────────┬───────────┘  └──────────────┬───────────┘
-               │ Metrics data                 │ Traces/Logs                  │ Build Artifact
-               ▼                               │                             ▼
-┌──────────────────────────┐                   │               ┌──────────────────────────┐
-│        Prometheus        │                   │               │     Docker Container      │
-│ (Stores metrics)         │                   │               │ (Image pushed to registry)│
-└──────────────┬───────────┘                   │               └──────────────┬───────────┘
-               │ Visualization queries         │                             │ Deployment
-               ▼                               ▼                             ▼
-┌──────────────────────────┐        ┌──────────────────────────┐   ┌──────────────────────────┐
-│         Grafana          │        │         Tempo (Traces)   │   │     Kubernetes Cluster   │
-│ (Dashboards & Alerts)    │        └──────────────────────────┘   │ (Deployment + Service +  │
-└──────────────┬───────────┘        ┌──────────────────────────┐   │  Probes + Autoscaling)   │
-               │ Alert triggers     │          Loki (Logs)     │   └──────────────────────────┘
-               ▼                    └──────────────────────────┘
-┌──────────────────────────┐
-│          Slack           │
-│ (Receives alert messages)│
-└──────────────────────────┘
+### Metrics and Alerting
 
+![Metrics collection and alerting](docs/architecture/opspilot-metrics-flow.png)
 
+### Human Approval and Recovery
 
-## 📂 Project Structure
+![Human approval and recovery](docs/architecture/opspilot-approval-flow.png)
 
-titan/
-│── app/
-│   ├── main.py
-│   ├── routes.py
-│   ├── metrics.py
-│   ├── tracing.py
-│   ├── slack_alerts.py
-│   └── utils/
-│── k8s/
-│   ├── deployment.yaml
-│   ├── service.yaml
-│   ├── configmap.yaml
-│   └── ingress.yaml
-│── Dockerfile
-│── requirements.txt
-│── README.md
+## Core Capabilities
 
+- FastAPI services for API and integration endpoints
+- LangGraph workflow for evidence collection, retrieval, analysis, and reporting
+- Groq integration for structured incident analysis
+- Chroma vector storage for semantic runbook and verified-outcome retrieval
+- Prometheus metrics and Alertmanager incident triggers
+- Grafana dashboard configuration
+- Telegram incident notifications and approval callbacks
+- Human approval before supported Kubernetes changes
+- Deterministic remediation restricted to known demo targets
+- SQLite incident history and approval tracking
+- Recovery checks before recording a successful outcome
+- Docker images and local Minikube deployment
+- GitHub Actions workflows for testing, building, and security checks
 
----
+## Three Controlled Recovery Scenarios
 
-## ⚙️ Kubernetes Deployment
+V1 focuses on three incidents in the local `opspilot-demo` workload.
 
-### Liveness Probe
+| Incident | Approved action | Recovery checks |
+| --- | --- | --- |
+| Application crash / CrashLoopBackOff | Restart the allowlisted demo Deployment after confirming eligible crash evidence | Kubernetes rollout and readiness checks |
+| OOMKilled / memory-limit incident | Increase the controlled demo memory limit from 256 MiB to 512 MiB | New Ready Pod, restart checks, and sustained Service HTTP success |
+| Readiness failure | Clear the known demo readiness flag | Same Pod identity, ready Service endpoints, and Service HTTP success |
 
-livenessProbe:
-httpGet:
-path: /health
-port: 8000
-initialDelaySeconds: 10
-periodSeconds: 5
+These actions are specific to the controlled demonstration. Increasing a memory limit is a mitigation; it does not establish that an application memory leak has been fixed.
 
-### Readiness Probe
+Other failures can require manual investigation rather than automatic remediation.
 
-readinessProbe:
-httpGet:
-path: /ready
-port: 8000
-initialDelaySeconds: 5
-periodSeconds: 5
+## Human Approval and Execution Controls
 
-resources:
-requests:
-memory: "256Mi"
-cpu: "100m"
-limits:
-memory: "512Mi"
-cpu: "300m"
+OpsPilot separates AI recommendations from execution.
 
----
+- Remediation switches are disabled by default.
+- Only predefined actions and demo targets are eligible.
+- Recommendations must satisfy evidence and confidence checks.
+- Unsupported or invalid recommendations require manual review.
+- Approvals expire and cannot be reused.
+- Execution rechecks the incident and target identity.
+- Rejected, expired, stale, or already-used approvals cannot authorize a new action.
+- The LLM does not receive arbitrary shell or Kubernetes execution access.
 
-## 📊 Observability
+## RAG and Incident History
 
-### Prometheus Metrics
-- Request count
-- Error count
-- Latency histogram
-- Custom business metrics
+OpsPilot uses two forms of context:
 
-### OpenTelemetry Traces
-- End-to-end request tracing
-- Context propagation
-- Exported to Tempo
+| Context | Purpose |
+| --- | --- |
+| Semantic retrieval | Find relevant runbooks and previously verified recovery outcomes |
+| Recent incident history | Provide chronological context from actual investigations |
 
-### Logs
-- Structured JSON logs
-- Exported to Loki
+Runbooks live in `ai_service/knowledge/runbooks/`.
 
----
+By default, Chroma data is stored under `data/chroma/`, and investigation history is stored in `data/opspilot_history.sqlite3`.
 
-## 🔔 Slack Alerts
+Only eligible, human-approved, successfully executed, and verified recovery outcomes are indexed as verified incident knowledge. Generated diagnoses remain hypotheses.
 
-Triggered when:
-- Error rate > threshold
-- Latency > threshold
-- Service unavailable
-- OOMKilled detected
-- CrashLoopBackOff detected
+## Repository Guide
 
----
+| Path | Contents |
+| --- | --- |
+| `ai_service/` | AI workflow, evidence collection, retrieval, policy, and remediation modules |
+| `api_service/` | API, approval, and notification components |
+| `opspilot_integration/` | Local bridge, monitoring integration, scenario tools, and verification |
+| `ai_service/knowledge/runbooks/` | Operational reference material |
+| `k8s/` | Kubernetes manifests |
+| `tests/` | Workflow, approval, incident, and recovery tests |
+| `.github/workflows/` | CI and security workflows |
+| `docs/` | Setup guides, architecture, and demo documentation |
 
-## 🐳 Docker Build
-docker build -t titan-ai-agent .
-docker run -p 8000:8000 titan-ai-agent
+## Getting Started
 
----
+The local environment uses WSL Ubuntu, Docker Desktop, and the Minikube profile `opspilot`.
 
-## ☸️ Deploy to Kubernetes
+Follow the setup guides before launching the bridge or running a controlled incident:
 
+- [Kubernetes and CI/CD setup](docs/cicd-setup.md)
+- [AI investigation and RAG setup](docs/ai-flow-setup.md)
+- [V1 demo and verification guide](docs/v1-finish.md)
+- [Readiness scenario](docs/readiness-demo.md)
+- [Resource incident guide](docs/live-resource-incidents.md)
 
-kubectl apply -f k8s/
-kubectl rollout status deployment/titan
+After configuring the documented dependencies and services, start the bridge from the repository root:
 
-Rollback:
+```bash
+./venv/bin/python -m opspilot_integration.run_ai_bridge
+```
 
----
+This starts the bridge with remediation disabled.
 
-## 🧪 Health Endpoints
+Inspect recorded investigations:
 
-- `/health` → Liveness
-- `/ready` → Readiness
-- `/metrics` → Prometheus
+```bash
+./venv/bin/python -m opspilot_integration.ai_status
+```
 
----
+Inspect one investigation using its actual ID:
+
+```bash
+./venv/bin/python -m opspilot_integration.ai_status --incident INVESTIGATION_ID
+```
+
+Use the V1 guide for explicit remediation switches, fault injection, and recovery verification.
+
+## Observability
+
+Prometheus collects application metrics and Kubernetes incident gauges. Alertmanager delivers firing events to the bridge, and Grafana provides dashboard views.
+
+The investigation workflow also collects bounded log and event snapshots. These snapshots support incident analysis and are not a complete centralized logging platform.
+
+OpenTelemetry logging configuration is present in the API service. Export requires a reachable, correctly configured collector.
+
+## CI/CD and Security
+
+The repository includes GitHub Actions workflows for:
+
+- Python tests
+- Docker builds and container startup checks
+- Trivy vulnerability scanning
+- CodeQL analysis
+- Publication and conditional local Minikube deployment
+
+Local deployment requires the configured self-hosted runner and a running cluster. Publication and deployment depend on the workflow gates passing.
+
+Workflow configuration alone does not demonstrate a successful deployment. Check the actual Actions results and scan reports.
+
+## Validation and Scope
+
+OpsPilot is a local portfolio project with controlled recovery scenarios.
+
+Offline tests exercise workflow and policy behavior using mocked external systems. They do not establish live Groq response quality, Telegram delivery, or Kubernetes recovery.
+
+Live validation requires observing the real alert, investigation, approval, execution, and recovery outcome. A successful Git push or source installation does not prove that sequence completed.
+
+Credentials, environment files, local databases, and vector indexes should remain outside version control.
+
+## Author
+
+**Sumana Purushothama**
+
+Building practical cloud, DevOps, observability, and AI-assisted incident response skills.
+
+[GitHub](https://github.com/Sumana1104)
+
 
 ## 👤 Author
 
